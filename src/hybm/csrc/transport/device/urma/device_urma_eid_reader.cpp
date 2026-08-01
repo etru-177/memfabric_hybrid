@@ -70,6 +70,47 @@ static bool IsAllHex(const std::string &s)
     return true;
 }
 
+static uint8_t HexToNibble(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<uint8_t>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<uint8_t>(ch - 'a' + 10);
+    }
+    return static_cast<uint8_t>(ch - 'A' + 10);
+}
+
+static Result ParseLocalEidEnv(uint32_t phyDeviceId, uint32_t rankId, std::array<uint8_t, COMM_ADDR_EID_LEN> &eidData,
+                               bool &isSet)
+{
+    constexpr const char *kLocalEidEnv = "USE_LOCAL_EID";
+    const char *value = std::getenv(kLocalEidEnv);
+    isSet = (value != nullptr);
+    if (!isSet) {
+        return BM_OK;
+    }
+
+    const std::string eidHex(value);
+    constexpr size_t kEidHexLen = COMM_ADDR_EID_LEN * 2U;
+    if (eidHex.size() != kEidHexLen || !IsAllHex(eidHex)) {
+        BM_LOG_ERROR("device_urma invalid " << kLocalEidEnv << ", expected " << kEidHexLen
+                                            << " hexadecimal characters, received length=" << eidHex.size()
+                                            << ", phyDeviceId=" << phyDeviceId << ", rankId=" << rankId);
+        return BM_INVALID_PARAM;
+    }
+
+    std::array<uint8_t, COMM_ADDR_EID_LEN> parsedEid{};
+    for (size_t idx = 0; idx < parsedEid.size(); ++idx) {
+        parsedEid[idx] =
+            static_cast<uint8_t>((HexToNibble(eidHex[idx * 2U]) << 4U) | HexToNibble(eidHex[idx * 2U + 1U]));
+    }
+    eidData = parsedEid;
+    BM_LOG_INFO("device_urma using EID from " << kLocalEidEnv << ", phyDeviceId=" << phyDeviceId
+                                              << ", rankId=" << rankId);
+    return BM_OK;
+}
+
 // Try to get IP from hccn_tool at the given toolPath.
 // Only calls access() for paths with '/' (absolute/relative); bare names rely on popen/PATH.
 // On success returns BM_OK and fills ipStr.
@@ -247,6 +288,12 @@ Result GetDeviceUrmaIpAddrFromSources(const std::string &toolPath, const std::st
 
 Result GetDeviceUrmaEid(uint32_t phyDeviceId, uint32_t rankId, std::array<uint8_t, COMM_ADDR_EID_LEN> &eidData)
 {
+    bool localEidSet = false;
+    const Result localEidRet = ParseLocalEidEnv(phyDeviceId, rankId, eidData, localEidSet);
+    if (localEidSet || localEidRet != BM_OK) {
+        return localEidRet;
+    }
+
     RootInfo ri;
     Result ret = TopoReader::ParseRootInfo(phyDeviceId, rankId, ri);
     if (ret != BM_OK) {
