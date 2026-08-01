@@ -146,7 +146,10 @@ public:
     {
         connectStatus = status;
     }
-    void RegisterClientBrokenHandler(const ock::smem::ConfigStoreClientBrokenHandler &handler) noexcept override {}
+    void RegisterClientBrokenHandler(const ock::smem::ConfigStoreClientBrokenHandler &handler) noexcept override
+    {
+        clientBrokenHandlerCount++;
+    }
     void RegisterServerBrokenHandler(const ock::smem::ConfigStoreServerBrokenHandler &handler) noexcept override {}
 
     uint64_t setCount{0};
@@ -160,6 +163,7 @@ public:
     uint64_t unwatchCount{0};
     uint64_t writeCount{0};
     uint64_t getCompleteKeyCount{0};
+    uint64_t clientBrokenHandlerCount{0};
 
     ock::smem::Result setResult_{ock::smem::SM_OK};
     ock::smem::Result getResult_{ock::smem::SM_OK};
@@ -195,6 +199,7 @@ public:
         unwatchCount = 0;
         writeCount = 0;
         getCompleteKeyCount = 0;
+        clientBrokenHandlerCount = 0;
 
         setResult_ = ock::smem::SM_OK;
         getResult_ = ock::smem::SM_OK;
@@ -351,4 +356,24 @@ TEST_F(SmemNetGroupEngineMockTest, GroupLeaveAbortsWhenGroupStoppedDuringLoop)
     EXPECT_EQ(group->GroupLeave(), ock::smem::SM_ERROR);
     EXPECT_FALSE(group->joined_.load());
     EXPECT_EQ(mockStoreManager_->casCount, 0);
+}
+
+// Regression guard: bm scenario (useClientBrokenHandler=false) must NOT register
+// ClientBrokenHandler. Otherwise a server link break triggers LeaveHandle on every
+// peer rank, destroying GVA imports and causing -6 read failures after meta recovery.
+TEST_F(SmemNetGroupEngineMockTest, CreateDoesNotRegisterClientBrokenHandlerByDefault)
+{
+    option_.useClientBrokenHandler = false;
+    auto group = ock::smem::SmemNetGroupEngine::Create(storePtr_, option_);
+    ASSERT_NE(group, nullptr);
+    EXPECT_EQ(mockStoreManager_->clientBrokenHandlerCount, 0U);
+}
+
+TEST_F(SmemNetGroupEngineMockTest, CreateRegistersClientBrokenHandlerWhenUseClientBrokenHandlerIsTrue)
+{
+    option_.useClientBrokenHandler = true;
+    option_.linkDownCb = [](uint32_t) { return ock::smem::SM_OK; };
+    auto group = ock::smem::SmemNetGroupEngine::Create(storePtr_, option_);
+    ASSERT_NE(group, nullptr);
+    EXPECT_EQ(mockStoreManager_->clientBrokenHandlerCount, 1U);
 }

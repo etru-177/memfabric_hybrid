@@ -154,8 +154,8 @@ Result SmemTransEntry::CreateGlobalTeam(uint32_t rankId)
     SmemGroupChangeCallback updateFunc = std::bind(&SmemTransEntry::UpdateHandle, this, std::placeholders::_1);
     SmemGroupChangeCallback leaveFunc = std::bind(&SmemTransEntry::LeaveHandle, this, std::placeholders::_1);
     SmemGroupChangeCallback linkDownFunc = std::bind(&SmemTransEntry::LinkDownHandle, this, std::placeholders::_1);
-    SmemGroupOption opt = {0U,        rankId,      config_.initTimeout * SECOND_TO_MILLSEC, true, joinFunc, updateFunc,
-                           leaveFunc, linkDownFunc};
+    SmemGroupOption opt = {
+        0U, rankId, config_.initTimeout * SECOND_TO_MILLSEC, true, joinFunc, updateFunc, leaveFunc, linkDownFunc, true};
     SmemGroupEnginePtr group = SmemNetGroupEngine::Create(store_, opt);
     SM_VALIDATE_RETURN(group != nullptr, "SmemNetGroupEngine::Create failed, rankId: " << rankId, SM_ERROR);
 

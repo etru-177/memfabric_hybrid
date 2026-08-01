@@ -386,15 +386,18 @@ Result AccTcpServerDefault::HandleNewConnection(const AccConnReq &req, const Acc
     auto result = newLink->Initialize(options_.linkSendQueueSize, workIndex, worker.Get());
     if (UNLIKELY(result != ACC_OK)) {
         LOG_ERROR("Failed to initialize the link from " << newLink->ShortName() << ", result " << result);
+        WorkerLinkCntUpdate(workIndex);
         return ACC_ERROR;
     }
 
     if (newLinkHandle_ == nullptr) {
         LOG_ERROR("NewLinkHandler not set, refuse the link from " << newLink->ShortName());
+        WorkerLinkCntUpdate(workIndex);
         return ACC_INVALID_PARAM;
     }
     result = newLinkHandle_(req, newLink.Get());
     if (UNLIKELY(result != ACC_OK)) {
+        WorkerLinkCntUpdate(workIndex);
         return result;
     }
 
@@ -406,17 +409,20 @@ Result AccTcpServerDefault::HandleNewConnection(const AccConnReq &req, const Acc
         std::lock_guard<std::mutex> guard(mutex_);
         if (!started_) {
             LOG_WARN("The server is being destroyed or has been destroyed. can't receive new connection.");
+            WorkerLinkCntUpdate(workIndex);
             return ACC_ERROR;
         }
         auto iter = connectedLinks_.find(newLink->Id());
         if (iter != connectedLinks_.end()) {
             LOG_ERROR("Failed to handle new connection as found duplicated link id " << newLink->Id());
+            WorkerLinkCntUpdate(workIndex);
             return ACC_ERROR;
         }
 
         /* added to worker */
         result = worker->AddLink(newLink, EPOLLIN | EPOLLOUT | EPOLLET);
         if (UNLIKELY(result != ACC_OK)) {
+            WorkerLinkCntUpdate(workIndex);
             return result;
         }
 

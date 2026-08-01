@@ -79,7 +79,7 @@ SmemGroupEnginePtr SmemNetGroupEngine::Create(const StorePtr &store, const SmemG
     SmemGroupEnginePtr group = SmMakeRef<SmemNetGroupEngine>(managerPtr, option);
     SM_VALIDATE_RETURN(group != nullptr, "SmemMakeRef<SmemNetGroupEngine> failed, rank: " << option.rank, nullptr);
 
-    if (option.linkDownCb != nullptr) {
+    if (option.useClientBrokenHandler && option.linkDownCb != nullptr) {
         auto *rawGroup = group.Get();
         auto alive = group->alive_;
         auto linkDownCb = option.linkDownCb;

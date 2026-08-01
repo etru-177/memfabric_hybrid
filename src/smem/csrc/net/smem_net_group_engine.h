@@ -52,7 +52,8 @@ struct SmemGroupOption {
     SmemGroupChangeCallback joinCb;
     SmemGroupChangeCallback updateCb;
     SmemGroupChangeCallback leaveCb;
-    SmemGroupChangeCallback linkDownCb; // TCP-level link down only
+    SmemGroupChangeCallback linkDownCb;  // TCP-level link down only
+    bool useClientBrokenHandler = false; // only trans scenario should register ClientBrokenHandler
 };
 
 enum GroupEventType : int32_t {
