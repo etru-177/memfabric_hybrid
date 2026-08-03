@@ -262,22 +262,31 @@ function check_path()
 }
 
 function get_ascend_version() {
-    cnt=$(lspci | grep Processing | grep Huawei | grep d802 -c)
-    if [ "${cnt}" -gt 0 ]; then
-        ascend_version="A2"
+    local soc_name=""
+    # 优先用 npu-smi 取 SoC 名（容器/宿主 lspci 不可靠时仍有效）
+    if command -v npu-smi &>/dev/null; then
+        soc_name=$(npu-smi info 2>/dev/null | grep -oE "Ascend9[0-9]+[A-Za-z]*" | head -n1)
+    fi
+    if [ -n "${soc_name}" ]; then
+        case "${soc_name}" in
+             *Ascend950*|*Ascend910_95*)
+                 ascend_version="A5" ;;
+             *Ascend910B*)
+                 ascend_version="A2" ;;
+             *Ascend910*)
+                 ascend_version="A3" ;;
+             *)
+                ascend_version="none" ;;
+        esac
         return
     fi
-
-    cnt=$(lspci | grep Processing | grep Huawei | grep d803 -c)
-    if [ "${cnt}" -gt 0 ]; then
-        ascend_version="A3"
-        return
-    fi
-
-    cnt=$(lspci | grep Processing | grep Huawei | grep d806 -c)
-    if [ "${cnt}" -gt 0 ]; then
+    # lspci 兜底（PCI 设备 ID：d802=A2, d803=A3, d806=A5）
+    if [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d806") -gt 0 ]; then
         ascend_version="A5"
-        return
+    elif [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d803") -gt 0 ]; then
+        ascend_version="A3"
+    elif [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d802") -gt 0 ]; then
+        ascend_version="A2"
     fi
 }
 
@@ -322,6 +331,12 @@ function try_install_extend()
         return
     fi
 
+    if [ "${ascend_version}" == "none" ]; then
+        print "ERROR" "cannot detect ascend chip version (got 'none'), abort install extend lib. \
+Ensure npu-smi is in PATH (source CANN set_env.sh) before running .run."
+        exit 1
+    fi
+
     cce_param="--cce-aicore-arch=dav-c220"
     if [ "${ascend_version}" == "A5" ]; then
         cce_param="--cce-aicore-arch=dav-c310"
@@ -335,7 +350,8 @@ function try_install_extend()
         cp ./*.so ${install_dir}//${pkg_arch}-${os1}/lib64
         print "INFO" "install hybm extend lib success"
     else
-        print "WARNING" "install extend lib failed, maybe cann version is old, least 8.3.RC1"
+        print "ERROR" "install hybm extend lib failed (bisheng exit ${exit_code}), maybe cann version is old, least 8.3.RC1"
+        exit 1
     fi
 
     if [ ! -d "${script_dir}/../accoffload_operators" ]; then
@@ -348,18 +364,18 @@ function try_install_extend()
     bisheng -x asc acc_offload_sparse_copy.cpp acc_offload_group_pack_copy.cpp \
         -fPIC -shared -g -o libmf_hybm_accoffload_kernel.so ${cce_param}
     if [ $? -ne 0 ]; then
-        print "WARNING" "bisheng compile acc_offload operators kernel failed."
+        print "ERROR" "bisheng compile acc_offload operators kernel failed."
         rm -f libmf_hybm_accoffload_kernel.so
-        return
+        exit 1
     fi
 
     python_bin=python3
     torch_dir=$(${python_bin} -c "import torch; import os; print(os.path.dirname(torch.__file__))" 2>/dev/null)
     torch_npu_dir=$(${python_bin} -c "import torch_npu; import os; print(os.path.dirname(torch_npu.__file__))" 2>/dev/null)
     if [ -z "${torch_dir}" ] || [ -z "${torch_npu_dir}" ]; then
-        print "WARNING" "torch/torch_npu not found, skip accoffload extend lib."
+        print "ERROR" "torch/torch_npu not found, cannot build accoffload extend lib."
         rm -f libmf_hybm_accoffload_kernel.so
-        return
+        exit 1
     fi
     ascend_home=${ASCEND_TOOLKIT_HOME:-/usr/local/Ascend/ascend-toolkit/latest}
 
@@ -388,9 +404,9 @@ function try_install_extend()
         -isystem ${torch_npu_dir}/include/torch_npu/csrc/core/npu \
         acc_offload_operators_launch.cpp -o acc_offload_operators_launch.o
     if [ $? -ne 0 ]; then
-        print "WARNING" "g++ compile acc_offload_operators_launch.cpp failed, skip accoffload extend lib."
+        print "ERROR" "g++ compile acc_offload_operators_launch.cpp failed."
         rm -f libmf_hybm_accoffload_kernel.so acc_offload_operators_launch.o
-        return
+        exit 1
     fi
 
     g++ -shared -fPIC -o libmf_hybm_accoffload.so \
@@ -402,9 +418,9 @@ function try_install_extend()
         -Wl,-z,noexecstack -Wl,-z,relro -Wl,-z,now \
         -Wl,-rpath,\$ORIGIN -Wl,-rpath,${torch_dir}/lib -Wl,-rpath,${torch_npu_dir}/lib -Wl,-rpath,${ascend_home}/lib64
     if [ $? -ne 0 ]; then
-        print "WARNING" "link libmf_hybm_accoffload.so failed, skip accoffload extend lib."
+        print "ERROR" "link libmf_hybm_accoffload.so failed."
         rm -f libmf_hybm_accoffload_kernel.so acc_offload_operators_launch.o
-        return
+        exit 1
     fi
 
     \cp libmf_hybm_accoffload.so libmf_hybm_accoffload_kernel.so ${install_dir}//${pkg_arch}-${os1}/lib64

@@ -90,9 +90,9 @@ MemSegmentPtr MemSegment::Create(const MemSegmentOptions &options, int entityId)
             // When host shared memory op type is set, use dedicated host shm segment.
             if ((options.dataOpType & HYBM_DOP_TYPE_HOST_SHM) != 0) {
                 tmpSeg = std::make_shared<HybmHostShmSegment>(options, entityId);
-            } else if ((HybmGetGvaVersion() == HYBM_GVA_V4 && socType_ == AscendSocType::ASCEND_910C &&
-                        options.shmFd < 0 && !(options.dataOpType & CONN_BASED_SEGMENT)) ||
-                       (socType_ == AscendSocType::ASCEND_950 && options.dataOpType == HYBM_DOP_TYPE_SDMA)) {
+            } else if ((HybmGetGvaVersion() == HYBM_GVA_V4 &&
+                        (socType_ == AscendSocType::ASCEND_910C || socType_ == AscendSocType::ASCEND_950) &&
+                        options.shmFd < 0 && !(options.dataOpType & CONN_BASED_SEGMENT))) {
                 tmpSeg = std::make_shared<HybmVmmBasedSegment>(options, entityId);
             } else {
                 tmpSeg = std::make_shared<HybmConnBasedSegment>(options, entityId);
