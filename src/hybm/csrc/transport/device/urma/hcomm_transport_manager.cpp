@@ -55,12 +55,17 @@ constexpr int32_t HCOMM_CHANNEL_FAILED = 2;
 constexpr int32_t HCOMM_CHANNEL_TIMEOUT = 3;
 } // namespace
 
-Result HcommTransportManager::WaitForChannelReady(HcommChannelHandle channel, uint32_t peerRank) const
+Result HcommTransportManager::WaitForChannelReady(HcommChannelHandle channel, uint32_t peerRank,
+                                                  std::chrono::milliseconds timeout) const
 {
     constexpr auto pollInterval = std::chrono::milliseconds(1);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
 
     int32_t channelStatus = HCOMM_CHANNEL_IN_PROGRESS;
     while (channelStatus == HCOMM_CHANNEL_IN_PROGRESS) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
         const auto ret = DlHcommApi::HcommChannelGetStatus(&channel, 1, &channelStatus);
         if (ret != 0) {
             BM_LOG_ERROR("device_urma HcommChannelGetStatus API failed, channel: " << channel << " peer: " << peerRank
@@ -68,8 +73,19 @@ Result HcommTransportManager::WaitForChannelReady(HcommChannelHandle channel, ui
             return BM_DL_FUNCTION_FAILED;
         }
         if (channelStatus == HCOMM_CHANNEL_IN_PROGRESS) {
-            std::this_thread::sleep_for(pollInterval);
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                break;
+            }
+            const auto nextPoll = now + pollInterval;
+            std::this_thread::sleep_until(nextPoll < deadline ? nextPoll : deadline);
         }
+    }
+    if (channelStatus == HCOMM_CHANNEL_IN_PROGRESS) {
+        BM_LOG_ERROR("device_urma channel wait TIMEOUT, channel: " << channel << " peerRank: " << peerRank
+                                                                   << " timeout_ms: " << timeout.count()
+                                                                   << " status: " << channelStatus);
+        return BM_TIMEOUT;
     }
     if (channelStatus == HCOMM_CHANNEL_READY) {
         return BM_OK;

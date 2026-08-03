@@ -10,6 +10,7 @@
  * See the Mulan PSL v2 for more details.
  */
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -31,11 +32,13 @@ const EndpointHandle MOCK_ENDPOINT = reinterpret_cast<EndpointHandle>(0xA501UL);
 const HcommMemHandle MOCK_MEM_HANDLE = reinterpret_cast<HcommMemHandle>(0xA502UL);
 constexpr uint64_t MOCK_LOCAL_ADDR = 0x100000UL;
 constexpr uint64_t MOCK_REMOTE_ADDR = 0x200000UL;
+constexpr HcommChannelHandle MOCK_CHANNEL = 0xA503UL;
 constexpr uint64_t MOCK_SIZE = 0x1000UL;
 constexpr uint64_t MOCK_MEM_TAG = 7UL;
 constexpr uint32_t MOCK_HCOMM_DESC_LEN = 4U;
 uint32_t g_memExportCallCount = 0;
 uint32_t g_memUnregCallCount = 0;
+uint32_t g_channelGetStatusCallCount = 0;
 
 struct DlHcommApiFnGuard {
     hcommEndpointCreateFunc oldEndpointCreate{DlHcommApi::gHcommEndpointCreate};
@@ -195,6 +198,17 @@ int32_t MockHcommMemUnimport(EndpointHandle endpoint, const void *memDesc, uint3
     EXPECT_EQ(endpoint, MOCK_ENDPOINT);
     EXPECT_NE(memDesc, nullptr);
     EXPECT_EQ(descLen, MOCK_HCOMM_DESC_LEN);
+    return BM_OK;
+}
+
+int32_t MockHcommChannelGetStatusInProgress(const ChannelHandle *channelList, uint32_t listNum, int32_t *statusList)
+{
+    EXPECT_NE(channelList, nullptr);
+    EXPECT_EQ(listNum, 1U);
+    EXPECT_EQ(*channelList, MOCK_CHANNEL);
+    EXPECT_NE(statusList, nullptr);
+    *statusList = 1;
+    g_channelGetStatusCallCount++;
     return BM_OK;
 }
 
@@ -422,4 +436,20 @@ TEST(HcommTransportManagerTest, HcommMemImportRejectsMalformedDescAndInvalidOutM
     DlHcommApi::gHcommMemImport = MockHcommMemImportFail;
     EXPECT_EQ(manager.HcommMemImport(endpoint, rawDesc.data(), static_cast<uint32_t>(rawDesc.size()), &imported),
               BM_DL_FUNCTION_FAILED);
+}
+
+TEST(HcommTransportManagerTest, WaitForChannelReadyTimesOutWhenChannelStaysInProgress)
+{
+    DlHcommApiFnGuard guard;
+    DlHcommApi::gHcommChannelGetStatus = MockHcommChannelGetStatusInProgress;
+    g_channelGetStatusCallCount = 0;
+
+    HcommTransportManager manager;
+    const auto start = std::chrono::steady_clock::now();
+    const auto ret = manager.WaitForChannelReady(MOCK_CHANNEL, 3, std::chrono::milliseconds(5));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_EQ(ret, BM_TIMEOUT);
+    EXPECT_GT(g_channelGetStatusCallCount, 0U);
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
 }

@@ -13,6 +13,7 @@
 #ifndef MF_HYBRID_HCOMM_TRANSPORT_MANAGER_H
 #define MF_HYBRID_HCOMM_TRANSPORT_MANAGER_H
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -161,7 +162,8 @@ public:
 
     Result HcommMemUnimport(const UrmaEndpointHandle &endpoint, const uint8_t *memDesc, uint32_t descLen);
 
-    Result WaitForChannelReady(HcommChannelHandle channel, uint32_t peerRank) const;
+    Result WaitForChannelReady(HcommChannelHandle channel, uint32_t peerRank,
+                               std::chrono::milliseconds timeout = std::chrono::seconds(100)) const;
 };
 
 } // namespace device
