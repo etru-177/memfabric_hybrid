@@ -428,12 +428,12 @@ void SmemNetGroupEngine::RankExit(int result, const std::string &key, const std:
             }
             val = static_cast<int>(tempVal);
         } catch (...) {
-            SM_LOG_ERROR("convert string to int failed");
+            SM_LOG_ERROR("convert string to int failed, value: " << value << " key: " << key);
             return;
         }
         globalExitHandler_(val);
     } else {
-        SM_LOG_ERROR("global exit failed");
+        SM_LOG_ERROR("global exit failed, result: " << result << " hasHandler: " << (globalExitHandler_ != nullptr));
     }
 }
 
@@ -1239,7 +1239,7 @@ void SmemNetGroupEngine::RemoteRankLinkDownCb(uint32_t remoteRankId)
 bool SmemNetGroupEngine::ClearBitmapForRank(SmemGroupInfo &info, uint32_t rankId)
 {
     if (rankId >= MAX_RANK_COUNT) {
-        SM_LOG_ERROR("ClearBitmapForRank invalid rank id: " << rankId);
+        SM_LOG_ERROR("ClearBitmapForRank invalid rank id: " << rankId << ", max: " << MAX_RANK_COUNT);
         return false;
     }
 
@@ -1257,7 +1257,7 @@ bool SmemNetGroupEngine::ClearBitmapForRank(SmemGroupInfo &info, uint32_t rankId
 bool SmemNetGroupEngine::TestBitmapForRank(uint32_t rankId) const
 {
     if (rankId >= MAX_RANK_COUNT) {
-        SM_LOG_ERROR("TestBitmapForRank invalid rank id: " << rankId);
+        SM_LOG_ERROR("TestBitmapForRank invalid rank id: " << rankId << ", max: " << MAX_RANK_COUNT);
         return false;
     }
 
@@ -1271,7 +1271,7 @@ bool SmemNetGroupEngine::TestBitmapForRank(uint32_t rankId) const
 bool SmemNetGroupEngine::UpdateBitmapFromRank(SmemGroupInfo &info, uint32_t rankId)
 {
     if (rankId >= MAX_RANK_COUNT) {
-        SM_LOG_ERROR("UpdateBitmapFromRank invalid rank id: " << rankId);
+        SM_LOG_ERROR("UpdateBitmapFromRank invalid rank id: " << rankId << ", max: " << MAX_RANK_COUNT);
         return false;
     }
 

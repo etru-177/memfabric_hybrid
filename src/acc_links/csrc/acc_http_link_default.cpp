@@ -150,7 +150,8 @@ Result AccHttpLinkDefault::ParseRequestLine()
     int lineEnd = FindLineEnd();
     if (lineEnd < 0) {
         if (recvBuf_.size() > HTTP_MAX_HEADER_SIZE) {
-            LOG_ERROR("HTTP request line too long on " << ShortName() << ", bufSize=" << recvBuf_.size());
+            LOG_ERROR("HTTP request line too long on " << ShortName() << ", bufSize=" << recvBuf_.size()
+                                                       << ", max: " << HTTP_MAX_HEADER_SIZE);
             SendErrorResponse(AccHttpStatusCode::BAD_REQUEST);
             return ACC_LINK_MSG_INVALID;
         }
@@ -211,7 +212,8 @@ Result AccHttpLinkDefault::ParseHeaders()
         int lineEnd = FindLineEnd();
         if (lineEnd < 0) {
             if (recvBuf_.size() > HTTP_MAX_HEADER_SIZE) {
-                LOG_ERROR("HTTP headers too long on " << ShortName() << ", bufSize=" << recvBuf_.size());
+                LOG_ERROR("HTTP headers too long on " << ShortName() << ", bufSize=" << recvBuf_.size()
+                                                      << ", max: " << HTTP_MAX_HEADER_SIZE);
                 SendErrorResponse(AccHttpStatusCode::BAD_REQUEST);
                 return ACC_LINK_MSG_INVALID;
             }
@@ -579,7 +581,8 @@ Result AccHttpLinkDefault::SendHttpResponse(int16_t statusCode, const std::strin
 {
     lastActivity_ = std::time(nullptr);
     if (statusCode < HTTP_STATUS_CODE_MIN || statusCode > HTTP_STATUS_CODE_MAX) {
-        LOG_ERROR("Invalid HTTP status code on " << ShortName() << ", statusCode=" << statusCode);
+        LOG_ERROR("Invalid HTTP status code on " << ShortName() << ", statusCode=" << statusCode << ", min: "
+                                                 << HTTP_STATUS_CODE_MIN << ", max: " << HTTP_STATUS_CODE_MAX);
         return ACC_INVALID_PARAM;
     }
     if (statusText.find('\r') != std::string::npos || statusText.find('\n') != std::string::npos) {

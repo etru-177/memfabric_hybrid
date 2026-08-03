@@ -350,7 +350,7 @@ Result AccStoreServer::SetHandler(const ock::acc::AccTcpRequestContext &context,
     auto &key = request.keys[0];
     auto &value = request.values[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -464,7 +464,7 @@ Result AccStoreServer::GetHandler(const ock::acc::AccTcpRequestContext &context,
 
     auto &key = request.keys[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -534,7 +534,7 @@ Result AccStoreServer::PrefixGetHandler(const ock::acc::AccTcpRequestContext &co
 
     auto &key = request.keys[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -572,7 +572,7 @@ Result AccStoreServer::WatchHandler(const ock::acc::AccTcpRequestContext &contex
 
     auto &key = request.keys[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -608,7 +608,7 @@ Result AccStoreServer::AddHandler(const ock::acc::AccTcpRequestContext &context,
     auto &key = request.keys[0];
     auto &value = request.values[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -680,7 +680,7 @@ Result AccStoreServer::RemoveHandler(const ock::acc::AccTcpRequestContext &conte
 
     auto &key = request.keys[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -710,7 +710,7 @@ Result AccStoreServer::AppendHandler(const ock::acc::AccTcpRequestContext &conte
     auto &key = request.keys[0];
     auto &value = request.values[0];
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
 
@@ -754,7 +754,7 @@ Result AccStoreServer::WriteHandler(const ock::acc::AccTcpRequestContext &contex
     auto &value = request.values[0];
 
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
     STORE_LOG_INFO("WRITE REQUEST(" << context.SeqNo() << ") for key(" << key << ") start.");
@@ -838,7 +838,7 @@ Result AccStoreServer::CasHandler(const ock::acc::AccTcpRequestContext &context,
     auto &exchange = request.values[1];
     auto newValue = exchange;
     if (key.length() > MAX_KEY_LEN_SERVER) {
-        STORE_LOG_ERROR("key length too large, length: " << key.length());
+        STORE_LOG_ERROR("key length too large, length: " << key.length() << ", max: " << MAX_KEY_LEN_SERVER);
         return StoreErrorCode::INVALID_KEY;
     }
     std::string newValueStr = std::string{newValue.begin(), newValue.end()};

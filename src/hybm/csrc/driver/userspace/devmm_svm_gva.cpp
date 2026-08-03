@@ -246,7 +246,7 @@ static inline uint32_t HeapSubTypeToMemVal(uint32_t type)
         [SUB_DVPP_TYPE] = MEM_DEV_VAL,         [SUB_READ_ONLY_TYPE] = MEM_DEV_VAL, [SUB_RESERVE_TYPE] = MEM_RESERVE_VAL,
         [SUB_DEV_READ_ONLY_TYPE] = MEM_DEV_VAL};
     if (type >= SUB_MAX_TYPE) {
-        BM_LOG_ERROR("type is out of range, type=" << type);
+        BM_LOG_ERROR("type is out of range, type=" << type << ", max: " << SUB_MAX_TYPE);
         return MEM_HOST_VAL;
     }
     return memVal[type];

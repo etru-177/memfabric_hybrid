@@ -49,14 +49,14 @@ AccResult AccTcpSslHelper::Start(SSL_CTX *sslCtx, AccTlsOption &param)
     ReadCheckCertParams();
     auto ret = StartCheckCertExpired();
     if (ret != ACC_OK) {
-        LOG_ERROR("check cert expired failed");
+        LOG_ERROR("check cert expired failed, ret: " << ret);
         Stop();
         return ACC_ERROR;
     }
 
     ret = InitSSL(sslCtx);
     if (ret != ACC_OK) {
-        LOG_ERROR("load init ssl failed");
+        LOG_ERROR("load init ssl failed, ret: " << ret);
         Stop();
         return ACC_ERROR;
     }
@@ -446,7 +446,8 @@ AccResult AccTcpSslHelper::CertVerify(X509 *cert) const
     }
     int keyLength = OpenSslApiWrapper::EvpPkeyBits(pkey);
     if (keyLength < MIN_PRIVATE_KEY_CONTENT_BIT_LEN) {
-        LOG_ERROR("Certificate key length is too short, key length < " << MIN_PRIVATE_KEY_CONTENT_BIT_LEN);
+        LOG_ERROR("Certificate key length is too short, keyLength: " << keyLength
+                                                                     << ", min: " << MIN_PRIVATE_KEY_CONTENT_BIT_LEN);
         OpenSslApiWrapper::EvpPkeyFree(pkey);
         return ACC_ERROR;
     }

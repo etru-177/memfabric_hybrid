@@ -35,7 +35,7 @@ Result SslShutdownHelper(SSL *ssl)
         LOG_ERROR("ssl shutdown failed!, error code is:" << ret);
         return ACC_ERROR;
     } else if (ret != 0) {
-        LOG_ERROR("unknown ssl shutdown ret val!");
+        LOG_ERROR("unknown ssl shutdown ret val: " << ret);
         return ACC_ERROR;
     }
 
@@ -49,7 +49,7 @@ Result SslShutdownHelper(SSL *ssl)
             LOG_ERROR("ssl shutdown failed!, error code is:" << OpenSslApiWrapper::SslGetError(ssl, ret));
             return ACC_ERROR;
         } else if (ret != 0) {
-            LOG_ERROR("unknown ssl shutdown ret val!");
+            LOG_ERROR("unknown ssl shutdown ret val: " << ret);
             return ACC_ERROR;
         }
     }

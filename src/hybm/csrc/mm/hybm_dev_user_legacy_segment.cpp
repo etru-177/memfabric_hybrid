@@ -359,7 +359,8 @@ Result HybmDevUserLegacySegment::ImportDeviceInfo(const std::string &info) noexc
     }
 
     if (deviceInfo.devicePhyId >= MAX_DEVICE_COUNT) {
-        BM_LOG_ERROR("Invalid deviceInfo device id: " << deviceInfo.devicePhyId);
+        BM_LOG_ERROR("Invalid deviceInfo device id: " << deviceInfo.devicePhyId
+                                                      << ", max: " << static_cast<int>(MAX_DEVICE_COUNT));
         return BM_ERROR;
     }
 
@@ -400,7 +401,8 @@ Result HybmDevUserLegacySegment::ImportSliceInfo(const std::string &info, MemSli
     }
 
     if (sliceInfo.devicePhyId >= MAX_DEVICE_COUNT) {
-        BM_LOG_ERROR("Invalid sliceInfo device id: " << sliceInfo.devicePhyId);
+        BM_LOG_ERROR("Invalid sliceInfo device id: " << sliceInfo.devicePhyId
+                                                     << ", max: " << static_cast<int>(MAX_DEVICE_COUNT));
         return BM_ERROR;
     }
 

@@ -285,7 +285,9 @@ void HaConfigStore::RunElectionLoop() noexcept
                 SM_LOG_INFO("Became leader after " << electionAttempt << " attempts");
                 becameLeader = true;
             } else {
-                SM_LOG_ERROR("TryBecomeLeader failed, lock will be released automatically");
+                SM_LOG_ERROR("TryBecomeLeader failed, electionAttempt: " << electionAttempt
+                                                                         << " leaderAddr: " << leaderAddr
+                                                                         << ", lock will be released automatically");
             }
         }
         if (becameLeader) {

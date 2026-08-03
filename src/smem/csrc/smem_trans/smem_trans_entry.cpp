@@ -45,7 +45,7 @@ SmemTransEntryPtr SmemTransEntry::Create(const std::string &name, const std::str
     SmemTransEntryPtr transEntry;
     auto result = SmemTransEntryManager::Instance().CreateEntryByName(name, storeUrl, config, transEntry);
     if (result != SM_OK) {
-        SM_LOG_AND_SET_LAST_ERROR("create trans entry failed, probably out of memory");
+        SM_LOG_AND_SET_LAST_ERROR("create trans entry failed, result: " << result << ", name: " << name);
         return nullptr;
     }
 
@@ -759,7 +759,7 @@ Result SmemTransEntry::ParseNameToUniqueId(const std::string &name, WorkerId &un
     }
     auto success = ParseTransName(name, workerUniqueId.address, workerUniqueId.port);
     if (!success) {
-        SM_LOG_ERROR("parse name failed.");
+        SM_LOG_ERROR("parse name failed, name: " << name);
         return SM_INVALID_PARAM;
     }
 
