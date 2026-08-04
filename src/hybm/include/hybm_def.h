@@ -36,7 +36,7 @@ typedef void *hybm_mem_slice_t;
 // HYBM_FLAG_DRAM_MAP_HOST_VA map host virtual address space
 #define HYBM_FLAG_DRAM_MAP_HOST_VA (1U << 9)
 // HYBM_FLAG_UNRESTRICTED_MEM mem_type == MEM_DDR_TYPE, pg_type == MEM_HUGE_PAGE_TYPE
-#define HYBM_FLAG_UNRESTRICTED_MEM (1U << 10)
+#define HYBM_FLAG_UNRESTRICTED_MEM (1U << 11)
 #define HYBM_FLAG_INIT_SHMEM_META  (1ULL << 63)
 
 #define HYBM_PRE_REG_SIZE_THRES (8192U * 1024) // local buffer larger than 8MB maybe preregister to mr
