@@ -414,6 +414,25 @@ void *HybmConnBasedSegment::AllocMemory(void *sliceAddr, uint64_t lvOffset, uint
     int mmapFlags = options_.shmFd < 0 ? (MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE) : (MAP_FIXED | MAP_SHARED);
     uint64_t mmapOffset = options_.shmFd < 0 ? 0 : lvOffset;
 
+    // 0. ASCEND_950 only support HalMemAlloc for URMA
+    if (socType_ == AscendSocType::ASCEND_950) {
+        uint64_t allocFlag = MEM_HOST | MEM_TYPE_DDR | MEM_PAGE_NORMAL;
+        void *halAllocPtr = nullptr;
+
+        int ret = DlHalApi::HalMemAlloc(&halAllocPtr, size, allocFlag);
+        if (ret != 0 || halAllocPtr == nullptr) {
+            BM_LOG_ERROR("halMemAlloc failed, ret:" << ret << " ptr:" << halAllocPtr << ". Cannot allocate " << size
+                                                    << " bytes DRAM huge page memory");
+            return MAP_FAILED;
+        } else {
+            allocMethod = MemAllocMethod::HAL_MEM_ALLOC;
+            BM_LOG_INFO("Successfully allocated DRAM hugepage via halMemAlloc for 950. "
+                        "addr:"
+                        << halAllocPtr << " size:" << size);
+            return halAllocPtr;
+        }
+    }
+
     // 1. Try to alloc DRAM with hugepage via mmap
     mapped = mmap(sliceAddr, size, prot, mmapFlags | MAP_HUGETLB, mmapFd, mmapOffset);
     if (mapped == sliceAddr) {
