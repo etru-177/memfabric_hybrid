@@ -267,8 +267,8 @@ Result SmemBmEntry::GroupOpBarrier(int32_t input)
 Result SmemBmEntry::JoinHandle(uint32_t rk)
 {
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
-    SM_LOG_DEBUG("do join func, local_rk: " << options_.rank << " receive_rk: " << rk
-                                            << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_INFO("do join func, local_rk: " << options_.rank << " receive_rk: " << rk
+                                           << ", rank size is: " << globalGroup_->GetRankSize());
 
     uint32_t unitSize = sizeof(hybm_exchange_info);
     std::string localInfo;
@@ -345,8 +345,8 @@ join_exit:
         goto rollback_exit;
     }
 
-    SM_LOG_DEBUG("end join func, local_rk: " << options_.rank << " receive_rk: " << rk << " receive_info_num:"
-                                             << allInfo.size() << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_INFO("end join func, local_rk: " << options_.rank << " receive_rk: " << rk << " receive_info_num:"
+                                            << allInfo.size() << ", rank size is: " << globalGroup_->GetRankSize());
     InvokeEventCb(rk, SMEM_GROUP_EVENT_JOIN);
     return SM_OK;
 
@@ -360,8 +360,8 @@ rollback_exit:
 Result SmemBmEntry::UpdateHandle(uint32_t rk)
 {
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
-    SM_LOG_DEBUG("do update func, local_rk: " << options_.rank << " receive_rk: " << rk
-                                              << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_INFO("do update func, local_rk: " << options_.rank << " receive_rk: " << rk
+                                             << ", rank size is: " << globalGroup_->GetRankSize());
 
     uint32_t unitSize = sizeof(hybm_exchange_info);
     std::string xinfo;
@@ -405,14 +405,14 @@ update_exit:
         return ret;
     }
 
-    SM_LOG_DEBUG("end update func, local_rk: " << options_.rank << " receive_rk: " << rk
-                                               << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_INFO("end update func, local_rk: " << options_.rank << " receive_rk: " << rk
+                                              << ", rank size is: " << globalGroup_->GetRankSize());
     return SM_OK;
 }
 
 Result SmemBmEntry::LeaveHandle(uint32_t rk)
 {
-    SM_LOG_DEBUG("do leave func, receive_rk: " << rk);
+    SM_LOG_INFO("do leave func, receive_rk: " << rk);
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
     auto ret = hybm_remove_imported(entity_, rk, 0);
     if (ret != 0) {
@@ -440,7 +440,7 @@ Result SmemBmEntry::Join(uint32_t flags)
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
     const uint32_t groupJoinTimeoutSec =
         mf::MfEnvUtil::GetOptionalUintOrDefault(mf::env::MF_GROUP_JOIN_MAX_TIMEOUT, MF_GROUP_JOIN_DEFAULT_TIMEOUT);
-    SM_LOG_DEBUG("group join timeout sec: " << groupJoinTimeoutSec);
+    SM_LOG_INFO("group join timeout sec: " << groupJoinTimeoutSec);
     auto start_time = std::chrono::steady_clock::now();
     // Track store connection state: if the store was ever disconnected since
     // we started joining, restart the clock once it reconnects. Time spent
@@ -468,7 +468,7 @@ Result SmemBmEntry::Join(uint32_t flags)
             continue;
         }
         SM_LOG_ERROR_RETURN_IT_IF_NOT_OK(ret, "join failed, ret: " << ret);
-        SM_LOG_DEBUG("join success. rank: " << options_.rank);
+        SM_LOG_INFO("join success. rank: " << options_.rank);
         return SM_OK;
     }
 }
@@ -485,7 +485,7 @@ Result SmemBmEntry::Update(uint32_t flags)
             continue;
         }
         SM_LOG_ERROR_RETURN_IT_IF_NOT_OK(ret, "update failed, ret: " << ret);
-        SM_LOG_DEBUG("update success. rank:" << options_.rank);
+        SM_LOG_INFO("update success. rank:" << options_.rank);
         return SM_OK;
     }
 
@@ -535,7 +535,7 @@ Result SmemBmEntry::ExtendLocalMem(smem_bm_mem_type memType, uint64_t size)
             continue;
         }
         SM_LOG_ERROR_RETURN_IT_IF_NOT_OK(ret, "update failed, ret: " << ret);
-        SM_LOG_DEBUG("update success. rank:" << options_.rank);
+        SM_LOG_INFO("update success. rank:" << options_.rank);
         if (memType == SMEM_MEM_TYPE_DEVICE) {
             realHBMSize_ += size;
         } else {

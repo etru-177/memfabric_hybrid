@@ -102,7 +102,7 @@ Result HybmVaManager::AddVaInfoFromExternal(const BaseAllocatedGvaInfo &baseInfo
     AllocatedGvaInfo info(baseInfo, localRankId, importedRankId);
     const auto ret = AddVaInfo(info);
     BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "ret = " << ret, ret);
-    BM_LOG_DEBUG("AddVaInfoFromExternal success: " << info);
+    BM_LOG_INFO("AddVaInfoFromExternal success: " << info);
     return BM_OK;
 }
 
@@ -111,7 +111,7 @@ Result HybmVaManager::AddVaInfo(const BaseAllocatedGvaInfo &baseInfo, uint32_t l
     AllocatedGvaInfo info(baseInfo, localRankId);
     const auto ret = AddVaInfo(info, onlyGva);
     BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "ret = " << ret, ret);
-    BM_LOG_DEBUG("AddVaInfo success: " << info);
+    BM_LOG_INFO("AddVaInfo success: " << info);
     return BM_OK;
 }
 
@@ -127,7 +127,7 @@ void HybmVaManager::RemoveOneVaInfo(uint64_t va, uint32_t type)
         return;
     }
     const AllocatedGvaInfo &info = it->second;
-    BM_LOG_DEBUG("Removing VaInfo: " << info);
+    BM_LOG_INFO("Removing VaInfo: " << info);
     for (uint32_t i = 0; i < HVM_BUTT; i++) {
         if (i == type) {
             continue;

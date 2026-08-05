@@ -85,8 +85,9 @@ SmemGroupEnginePtr SmemNetGroupEngine::Create(const StorePtr &store, const SmemG
         auto linkDownCb = option.linkDownCb;
         auto localRank = option.rank;
         managerPtr->RegisterClientBrokenHandler([rawGroup, alive, linkDownCb, localRank]() -> int {
-            if (!*alive || !rawGroup->IsJoined())
+            if (!*alive || !rawGroup->IsJoined()) {
                 return 0;
+            }
             std::vector<uint32_t> rankIds;
             rawGroup->GetAllRanksFromBitMap(rankIds);
             for (auto rk : rankIds) {
@@ -695,8 +696,8 @@ Result SmemNetGroupEngine::TryRemovePrefixKey(uint32_t rank)
             prefixKey_.clear();
         }
     } else {
-        SM_LOG_WARN("remove key not successful, src_rank:" << option_.rank << " key:" << store_->GetCompleteKey(key)
-                                                           << " ret:" << ret);
+        SM_LOG_DEBUG("remove key not successful, src_rank:" << option_.rank << " key:" << store_->GetCompleteKey(key)
+                                                            << " ret:" << ret);
     }
     return ret;
 }

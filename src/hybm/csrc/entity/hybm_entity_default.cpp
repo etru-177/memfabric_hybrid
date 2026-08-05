@@ -588,7 +588,7 @@ int32_t MemEntityDefault::ImportForTagManager()
 int32_t MemEntityDefault::ImportForTransportManager()
 {
     if (transportManager_ == nullptr || (options_.bmDataOpType & HYBM_DOP_TYPE_AIV_SDMA)) {
-        BM_LOG_INFO("no transport, no need import.");
+        BM_LOG_DEBUG("no transport, no need import.");
         return BM_OK;
     }
     int32_t ret = BM_ERROR;
