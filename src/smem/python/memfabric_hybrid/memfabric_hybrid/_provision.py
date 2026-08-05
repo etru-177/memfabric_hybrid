@@ -24,6 +24,7 @@ _WHEEL_MARKER = ".hybm_aicpu_provision_wheel_only"
 _KERNEL_REL = "opp/vendors/cust/op_impl/aicpu/kernel"
 _CONFIG_REL = "opp/vendors/cust/op_impl/aicpu/config"
 _CONF_REL = "conf"
+_LOCK_FILENAME = ".cann_hybm_kernel_provision.lock"
 
 _INI_STANDARD_BLOCK = (
     "name:cann-hybm-compat.tar.gz\n"
@@ -373,34 +374,36 @@ def _needs_provisioning(pkg_dir, config_fd):
     return target is None or wheel != target
 
 
-# ========== lock (fcntl flock, dir_fd anchored) ==========
+# ========== lock (fcntl flock, config dir_fd anchored) ==========
 
 
-def _acquire_lock(anchor_fd, deadline):
-    """Acquire exclusive flock on a fresh file description for anchor.
-
-    Opens "." relative to anchor_fd for an independent open file
-    description on the same directory inode.  Retry loop only for
-    BlockingIOError (contention).  All errors close fd and wrap in
-    ProvisioningError with stage, errno and text preserved.
-    """
+def _acquire_lock(config_fd, deadline):
+    """Acquire exclusive flock on the permanent lock file in config_fd."""
     while True:
         try:
-            fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=anchor_fd)
+            fd = os.open(
+                _LOCK_FILENAME,
+                os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+                mode=stat.S_IRUSR | stat.S_IWUSR,
+                dir_fd=config_fd,
+            )
         except OSError as e:
-            raise ProvisioningError("acquire_lock", None, "open fail (errno=%d): %s" % (e.errno, e), None)
+            raise ProvisioningError("acquire_lock", None, "open fail (errno=%s): %s" % (e.errno, e), None)
         try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                _close_fds_safe(fd)
+                raise ProvisioningError("acquire_lock", None, "lock file is not regular", None)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return fd
         except BlockingIOError:
-            os.close(fd)
+            _close_fds_safe(fd)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ProvisioningError("acquire_lock", None, "timeout after %ds" % _LOCK_TIMEOUT_SEC, None)
             time.sleep(min(remaining, 1.0))
         except OSError as e:
-            os.close(fd)
-            raise ProvisioningError("acquire_lock", None, "flock fail (errno=%d): %s" % (e.errno, e), None)
+            _close_fds_safe(fd)
+            raise ProvisioningError("acquire_lock", None, "flock fail (errno=%s): %s" % (e.errno, e), None)
 
 
 def _release_lock(fd):
@@ -637,17 +640,10 @@ def _close_fds_safe(*fds):
             pass
 
 
-def _provision_locked(pkg_dir, anchor_path, anchor):
-    """Run inside lock: version check, build, install using fixed target fds.
-
-    Opens config first for version check (avoids unnecessary kernel/conf
-    dir creation).  Version match -> immediate skip.  Needs provisioning
-    -> opens kernel+conf dirs, inode check, build, install.
-    """
+def _provision_locked(pkg_dir, anchor_path, anchor, config_fd):
+    """Run inside lock: recheck version, build, and install using fixed fds."""
     fds = []
     try:
-        config_fd = _resolve_dir_fd(anchor, _CONFIG_REL, create=True)
-        fds.append(config_fd)
         if not _needs_provisioning(pkg_dir, config_fd):
             return
 
@@ -695,24 +691,22 @@ def provision():
         return
 
     anchor_path, anchor = _open_anchor(ascend_home)
+    config_fd = None
     try:
-        # Pre-lock quick version check (temporary config fd).
-        cfg = None
         try:
-            cfg = _resolve_dir_fd(anchor, _CONFIG_REL)
-            needs = _needs_provisioning(pkg_dir, cfg)
-        except OSError:
-            needs = True
-        finally:
-            if cfg is not None:
-                os.close(cfg)
+            config_fd = _resolve_dir_fd(anchor, _CONFIG_REL, create=True)
+        except OSError as e:
+            raise ProvisioningError(
+                "resolve_config", None, "open/create config fail (errno=%s): %s" % (e.errno, e), None
+            )
+        needs = _needs_provisioning(pkg_dir, config_fd)
         if not needs:
             return
 
-        lock_fd = _acquire_lock(anchor, time.monotonic() + _LOCK_TIMEOUT_SEC)
+        lock_fd = _acquire_lock(config_fd, time.monotonic() + _LOCK_TIMEOUT_SEC)
         try:
-            _provision_locked(pkg_dir, anchor_path, anchor)
+            _provision_locked(pkg_dir, anchor_path, anchor, config_fd)
         finally:
             _release_lock(lock_fd)
     finally:
-        os.close(anchor)
+        _close_fds_safe(config_fd, anchor)
