@@ -116,7 +116,7 @@ private:
     Result CreateGlobalTeam(uint32_t rankSize, uint32_t rankId);
     Result JoinHandle(uint32_t rk);
     Result UpdateHandle(uint32_t rk);
-    Result GroupOpBarrier(int32_t input);
+    Result GroupOpBarrier(int32_t input, std::string logTag);
     Result LeaveHandle(uint32_t rk);
     void InvokeEventCb(uint32_t rankId, smem_bm_group_event_t event);
 

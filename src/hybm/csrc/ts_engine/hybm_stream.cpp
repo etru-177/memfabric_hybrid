@@ -433,6 +433,7 @@ int HybmStream::Synchronize(uint32_t task) noexcept
     if (retry >= MAX_RETRY) {
         BM_LOG_ERROR("Synchronize timeout, streamId: " << streamId_ << " sqHead: " << sqHead_ << " sqTail: " << sqTail_
                                                        << " task: " << task << " retry: " << retry);
+        BM_LOG_ERROR("last task sqe:" << PrintSqe(&taskList_[sqHead_].sqe));
         return BM_TIMEOUT;
     }
     return ret;

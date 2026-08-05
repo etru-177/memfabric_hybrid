@@ -146,18 +146,21 @@ Result SmemNetGroupEngine::StoreGetCanInterrupt(const std::string &key, std::str
     return SM_TIMEOUT;
 }
 
-Result SmemNetGroupEngine::GroupGatherResult(int32_t localRet, int32_t &totalRet)
+Result SmemNetGroupEngine::GroupGatherResult(int32_t localRet, std::vector<std::pair<int, int>> &errList)
 {
     SM_ASSERT_RETURN(store_ != nullptr, SM_INVALID_PARAM);
     uint32_t size = groupInfo_.groupSize;
+    uint32_t unitSize = sizeof(int32_t) + sizeof(int32_t);
     std::string prefix = std::to_string(groupVersion_) + "_";
     std::string idx = prefix + std::to_string(++allGatherGroupSn_);
     std::string addKey = idx + "_GA";
     std::string waitKey = idx + "_GW";
 
-    std::vector<uint8_t> input(sizeof(int32_t));
+    errList.clear();
+    std::vector<uint8_t> input(unitSize);
     uint64_t val = 0;
-    *reinterpret_cast<int32_t *>(input.data()) = localRet;
+    reinterpret_cast<int32_t *>(input.data())[0] = static_cast<int32_t>(option_.rank);
+    reinterpret_cast<int32_t *>(input.data())[1] = localRet;
     auto ret = store_->Append(addKey, input, val);
     if (ret != SM_OK) {
         SM_LOG_AND_SET_LAST_ERROR("store add key: " << store_->GetCompleteKey(addKey)
@@ -167,14 +170,14 @@ Result SmemNetGroupEngine::GroupGatherResult(int32_t localRet, int32_t &totalRet
     SM_LOG_DEBUG("store add key: " << store_->GetCompleteKey(addKey) << " len: " << val << " size:" << size);
 
     /* only the first rank needs to clear the last key, and it's unnecessary to clear map for first time */
-    if (val == sizeof(int32_t) && allGatherGroupSn_ > REMOVE_INTERVAL) {
+    if (val == unitSize && allGatherGroupSn_ > REMOVE_INTERVAL) {
         uint32_t delSn = allGatherGroupSn_ - REMOVE_INTERVAL;
         GroupOldKeyDelayClean(prefix, "_GA", delSn, delSn);
         GroupOldKeyDelayClean(prefix, "_GW", delSn, delSn);
     }
 
     /* the last guy set the status to ok, and other guys just wait for the last guy set the value */
-    if (val == sizeof(int32_t) * size) {
+    if (val == unitSize * size) {
         ret = store_->Set(waitKey, SMEM_GROUP_SET_STR);
         if (ret != SM_OK) {
             SM_LOG_AND_SET_LAST_ERROR("store set key: " << store_->GetCompleteKey(waitKey)
@@ -196,7 +199,7 @@ Result SmemNetGroupEngine::GroupGatherResult(int32_t localRet, int32_t &totalRet
 
     std::vector<uint8_t> output;
     ret = store_->Get(addKey, output, 0);
-    if (ret != SM_OK || output.size() != sizeof(int32_t) * size) {
+    if (ret != SM_OK || output.size() != unitSize * size) {
         SM_LOG_AND_SET_LAST_ERROR("after wait, store get key: "
                                   << store_->GetCompleteKey(addKey) << " failed, result:" << ConfigStore::ErrStr(ret)
                                   << " recv_size: " << output.size() << " input_size:" << input.size()
@@ -205,9 +208,10 @@ Result SmemNetGroupEngine::GroupGatherResult(int32_t localRet, int32_t &totalRet
     }
 
     auto *total = reinterpret_cast<int32_t *>(output.data());
-    totalRet = 0;
     for (uint32_t i = 0; i < size; i++) {
-        totalRet |= total[i];
+        if (total[(i << 1) | 1] != 0) {
+            errList.emplace_back(total[i << 1], total[(i << 1) | 1]); // rankId, errorCode
+        }
     }
     return SM_OK;
 }
@@ -817,6 +821,14 @@ Result SmemNetGroupEngine::GatherAllPrefixKeys(const std::string &update,
                 SM_LOG_WARN("rank " << rk << " is in bitmap but missing BMEX key, trigger link down cleanup");
                 RemoteRankLinkDownCb(rk);
             }
+            retMap.erase(rk);
+        }
+        std::string rankStr;
+        if (!retMap.empty()) {
+            for (auto &pr : retMap) {
+                rankStr += std::to_string(pr.first) + ",";
+            }
+            SM_LOG_WARN("has some rank not exist prefix key, please retry. ranks:" << rankStr);
         }
         return SM_INNER_BUSY;
     }

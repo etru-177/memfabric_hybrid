@@ -44,8 +44,9 @@ HYBM_API int32_t hybm_data_copy(hybm_entity_t e, hybm_copy_params *params, hybm_
             return BM_INVALID_PARAM;
         }
     } else if ((HybmVaManager::dirMask[direction] & except) != HybmVaManager::dirMask[direction]) {
-        BM_LOG_ERROR("Direction mismatch: specified=" << static_cast<int>(direction) << " src=" << params->src
-                                                      << " dest=" << params->dest);
+        BM_LOG_ERROR("Direction mismatch: specified=" << static_cast<int>(direction)
+                                                      << " except:" << static_cast<int>(except)
+                                                      << " src=" << params->src << " dest=" << params->dest);
         return BM_INVALID_PARAM;
     }
 
@@ -142,8 +143,9 @@ HYBM_API int32_t hybm_data_batch_copy(hybm_entity_t e, hybm_batch_copy_params *p
         uint8_t except = srcMask | (dstMask << 4);
 
         if ((HybmVaManager::dirMask[direction] & except) != HybmVaManager::dirMask[direction]) {
-            BM_LOG_ERROR("Direction mismatch at index " << i << ": dir=" << direction << " except:" << except << " src="
-                                                        << params->sources[i] << " dest=" << params->destinations[i]);
+            BM_LOG_ERROR("Direction mismatch at index "
+                         << i << ": dir=" << static_cast<int>(direction) << " except:" << static_cast<int>(except)
+                         << " src=" << params->sources[i] << " dest=" << params->destinations[i]);
             return BM_INVALID_PARAM;
         }
     }

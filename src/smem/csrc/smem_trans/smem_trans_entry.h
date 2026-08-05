@@ -125,7 +125,7 @@ private:
     Result JoinImport(std::unordered_map<uint32_t, std::string> &allInfo, bool isEntity);
     Result JoinHandle(uint32_t rk);
     Result UpdateHandle(uint32_t rk);
-    Result GroupOpBarrier(int32_t input);
+    Result GroupOpBarrier(int32_t input, std::string logTag);
     Result LeaveHandle(uint32_t rk);
     Result LinkDownHandle(uint32_t rk); // TCP link down, invokes PeerDownCallback
     Result Join(uint32_t flags);

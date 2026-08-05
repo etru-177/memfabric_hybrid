@@ -163,16 +163,20 @@ Result SmemTransEntry::CreateGlobalTeam(uint32_t rankId)
     return SM_OK;
 }
 
-Result SmemTransEntry::GroupOpBarrier(int32_t input)
+Result SmemTransEntry::GroupOpBarrier(int32_t input, std::string logTag)
 {
-    int32_t remoteRet = input;
-    int32_t ret = globalGroup_->GroupGatherResult(input, remoteRet);
+    std::vector<std::pair<int, int>> errList;
+    int32_t ret = globalGroup_->GroupGatherResult(input, errList);
     if (ret != SM_OK) {
-        SM_LOG_ERROR("join barrier failed, result: " << ret);
+        SM_LOG_ERROR(logTag << " failed, result: " << ret);
         return ret;
     }
-    if (remoteRet != SM_OK) {
-        SM_LOG_ERROR("join barrier, get remote result: " << remoteRet);
+    if (!errList.empty()) {
+        std::string tmp;
+        for (auto &p : errList) {
+            tmp += std::to_string(p.first) + ":" + std::to_string(p.second) + ",";
+        }
+        SM_LOG_WARN(logTag << " ret barrier, get remote result " << tmp);
         return SM_ERROR;
     }
     return SM_OK;
@@ -318,9 +322,8 @@ Result SmemTransEntry::JoinHandle(uint32_t rk)
     }
 
     ret = JoinImport(allInfo, true);
-    ret = GroupOpBarrier(ret);
+    ret = GroupOpBarrier(ret, "barrier before mmap");
     if (ret != SM_OK) {
-        SM_LOG_ERROR("hybm barrier before mmap failed, result: " << ret);
         goto rollback_exit;
     }
 
@@ -334,9 +337,8 @@ Result SmemTransEntry::JoinHandle(uint32_t rk)
         }
     }
 
-    ret = GroupOpBarrier(ret);
+    ret = GroupOpBarrier(ret, "barrier after mmap");
     if (ret != SM_OK) {
-        SM_LOG_ERROR("hybm barrier after mmap failed, result: " << ret);
         goto rollback_exit;
     }
 
@@ -403,9 +405,8 @@ Result SmemTransEntry::UpdateHandle(uint32_t rk)
     }
 
 update_exit:
-    ret = GroupOpBarrier(ret);
+    ret = GroupOpBarrier(ret, "barrier update");
     if (ret != SM_OK) {
-        SM_LOG_ERROR("hybm barrier after mmap failed, result: " << ret);
         return ret;
     }
 

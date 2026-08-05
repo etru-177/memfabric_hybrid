@@ -184,12 +184,12 @@ std::string JoinableRanksQpManager::GetErrorConnectionsStatus(const std::vector<
             continue;
         }
         if (rankId >= rankCount_) {
-            oss << "[ rank = " << rankId << " : is out of range ]\r\n";
+            oss << "[rank=" << rankId << " : is out of range ]\r\n";
         } else {
-            oss << "[ rank = " << rankId << " : socketHandle = " << connections_[rankId].socketHandle
-                << " socketFd = " << connections_[rankId].socketFd
-                << " qpConnectCalled = " << connections_[rankId].qpConnectCalled
-                << " qpStatus = " << connections_[rankId].qpStatus << " ]\r\n";
+            oss << "[rank=" << rankId << ": socketHandle=" << connections_[rankId].socketHandle
+                << " socketFd=" << connections_[rankId].socketFd
+                << " qpConnectCalled=" << connections_[rankId].qpConnectCalled
+                << " qpStatus=" << connections_[rankId].qpStatus << " ]\r\n";
         }
     }
     return oss.str();

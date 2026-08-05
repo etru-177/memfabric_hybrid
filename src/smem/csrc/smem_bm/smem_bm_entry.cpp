@@ -249,16 +249,20 @@ void SmemBmEntry::Uninitialize()
     inited_ = false;
 }
 
-Result SmemBmEntry::GroupOpBarrier(int32_t input)
+Result SmemBmEntry::GroupOpBarrier(int32_t input, std::string logTag)
 {
-    int32_t remoteRet = input;
-    int32_t ret = globalGroup_->GroupGatherResult(input, remoteRet);
+    std::vector<std::pair<int, int>> errList;
+    int32_t ret = globalGroup_->GroupGatherResult(input, errList);
     if (ret != SM_OK) {
-        SM_LOG_ERROR("join barrier failed, result: " << ret);
+        SM_LOG_ERROR(logTag << " failed, result: " << ret);
         return ret;
     }
-    if (remoteRet != SM_OK) {
-        SM_LOG_ERROR("join barrier, get remote result: " << remoteRet);
+    if (!errList.empty()) {
+        std::string tmp;
+        for (auto &p : errList) {
+            tmp += std::to_string(p.first) + ":" + std::to_string(p.second) + ",";
+        }
+        SM_LOG_WARN(logTag << " ret barrier, get remote result " << tmp);
         return SM_ERROR;
     }
     return SM_OK;
@@ -325,9 +329,8 @@ Result SmemBmEntry::JoinHandle(uint32_t rk)
         }
     }
 
-    ret = GroupOpBarrier(ret);
+    ret = GroupOpBarrier(ret, "barrier before mmap");
     if (ret != SM_OK) {
-        SM_LOG_ERROR("hybm barrier before mmap failed, result: " << ret);
         goto rollback_exit;
     }
 
@@ -339,14 +342,13 @@ Result SmemBmEntry::JoinHandle(uint32_t rk)
     }
 
 join_exit:
-    ret = GroupOpBarrier(ret);
+    ret = GroupOpBarrier(ret, "barrier after mmap");
     if (ret != SM_OK) {
-        SM_LOG_ERROR("hybm barrier after mmap failed, result: " << ret);
         goto rollback_exit;
     }
 
-    SM_LOG_INFO("end join func, local_rk: " << options_.rank << " receive_rk: " << rk << " receive_info_num:"
-                                            << allInfo.size() << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_DEBUG("end join func, local_rk: " << options_.rank << " receive_rk: " << rk << " receive_info_num:"
+                                             << allInfo.size() << ", rank size is: " << globalGroup_->GetRankSize());
     InvokeEventCb(rk, SMEM_GROUP_EVENT_JOIN);
     return SM_OK;
 
@@ -398,21 +400,23 @@ Result SmemBmEntry::UpdateHandle(uint32_t rk)
     }
 
 update_exit:
-    ret = GroupOpBarrier(ret);
+    ret = GroupOpBarrier(ret, "barrier update");
     if (ret != SM_OK) {
-        SM_LOG_ERROR("hybm barrier after mmap failed, result: " << ret);
-        // todo: how to rollback mmap
         return ret;
     }
 
-    SM_LOG_INFO("end update func, local_rk: " << options_.rank << " receive_rk: " << rk
-                                              << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_DEBUG("end update func, local_rk: " << options_.rank << " receive_rk: " << rk
+                                               << ", rank size is: " << globalGroup_->GetRankSize());
     return SM_OK;
 }
 
 Result SmemBmEntry::LeaveHandle(uint32_t rk)
 {
     SM_LOG_INFO("do leave func, receive_rk: " << rk);
+    if (!inited_) {
+        SM_LOG_INFO("bm not inited, skip leave");
+        return SM_NOT_INITIALIZED;
+    }
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
     auto ret = hybm_remove_imported(entity_, rk, 0);
     if (ret != 0) {
