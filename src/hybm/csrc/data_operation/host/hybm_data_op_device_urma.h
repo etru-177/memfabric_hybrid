@@ -99,6 +99,7 @@ private:
     bool inited_{false};
     uint32_t rankId_{0};
     std::shared_ptr<transport::TransportManager> transportManager_;
+    uint64_t urmaSwapSpaceSize_{0};
     void *urmaSwapBaseAddr_{nullptr};
     std::shared_ptr<RbtreeRangePool> urmaSwapMemoryAllocator_;
 };

@@ -15,6 +15,9 @@
 #include "hybm_data_op_device_urma.h"
 #include "dl_acl_api.h"
 #include "dl_hal_api.h"
+#include "hybm_define.h"
+#include "hybm_rbtree_range_pool.h"
+#include "hybm_transport_manager.h"
 #undef private
 
 using namespace ock::mf;
@@ -22,6 +25,7 @@ using namespace ock::mf;
 namespace {
 constexpr uint32_t LOCAL_RANK = 0;
 constexpr uint32_t REMOTE_RANK = 1;
+constexpr uint64_t TEST_SWAP_ALLOC_SIZE = 4096ULL;
 
 int32_t MockAclrtMemcpy(void *dst, size_t destMax, const void *src, size_t count, uint32_t kind)
 {
@@ -203,10 +207,41 @@ public:
     Result AllocSwapMemory() override
     {
         if (allocatedSwapBase_ == nullptr) {
-            allocatedSwapBase_ = malloc(4096);
+            allocatedSwapBase_ = malloc(TEST_SWAP_ALLOC_SIZE);
         }
         urmaSwapBaseAddr_ = allocatedSwapBase_;
         return urmaSwapBaseAddr_ == nullptr ? BM_MALLOC_FAILED : BM_OK;
+    }
+
+    Result InitializeWithSwap(uint64_t swapSizeBytes)
+    {
+        if (inited_) {
+            return BM_OK;
+        }
+        urmaSwapSpaceSize_ = swapSizeBytes;
+        if (urmaSwapSpaceSize_ == 0) {
+            inited_ = true;
+            return BM_OK;
+        }
+        auto ret = AllocSwapMemory();
+        if (ret != BM_OK) {
+            return ret;
+        }
+        transport::TransportMemoryRegion input;
+        input.addr = reinterpret_cast<uint64_t>(urmaSwapBaseAddr_);
+        input.size = urmaSwapSpaceSize_;
+        input.flags = transport::REG_MR_FLAG_HBM;
+        if (transportManager_ != nullptr) {
+            ret = transportManager_->RegisterMemoryRegion(input);
+            if (ret != BM_OK) {
+                FreeSwapMemory();
+                return BM_MALLOC_FAILED;
+            }
+        }
+        urmaSwapMemoryAllocator_ =
+            std::make_shared<RbtreeRangePool>(static_cast<uint8_t *>(urmaSwapBaseAddr_), urmaSwapSpaceSize_);
+        inited_ = true;
+        return BM_OK;
     }
 
 private:
@@ -304,12 +339,12 @@ protected:
 
 TEST_F(HybmDataOpDeviceUrmaTest, InitializeIsIdempotentAndUnInitializeClearsState)
 {
-    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_EQ(dataOp->InitializeWithSwap(TEST_SWAP_ALLOC_SIZE), BM_OK);
     EXPECT_TRUE(dataOp->inited_);
     void *swapBase = dataOp->urmaSwapBaseAddr_;
     EXPECT_EQ(tm->registerMemoryRegionCount, 1U);
 
-    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_EQ(dataOp->InitializeWithSwap(TEST_SWAP_ALLOC_SIZE), BM_OK);
     EXPECT_EQ(dataOp->urmaSwapBaseAddr_, swapBase);
     EXPECT_EQ(tm->registerMemoryRegionCount, 1U);
 
@@ -322,7 +357,7 @@ TEST_F(HybmDataOpDeviceUrmaTest, InitializeReturnsMallocFailedWhenSwapRegistrati
 {
     tm->registerMemoryRegionResult = BM_ERROR;
 
-    EXPECT_EQ(dataOp->Initialize(), BM_MALLOC_FAILED);
+    EXPECT_EQ(dataOp->InitializeWithSwap(TEST_SWAP_ALLOC_SIZE), BM_MALLOC_FAILED);
     EXPECT_FALSE(dataOp->inited_);
     EXPECT_EQ(dataOp->urmaSwapBaseAddr_, nullptr);
     EXPECT_EQ(tm->registerMemoryRegionCount, 1U);
@@ -386,7 +421,7 @@ TEST_F(HybmDataOpDeviceUrmaTest, DataCopyRemoteWriteAndReadUseTransportManager)
 
 TEST_F(HybmDataOpDeviceUrmaTest, DataCopySafePutUsesSwapWhenLocalSourceIsNotRegistered)
 {
-    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_EQ(dataOp->InitializeWithSwap(TEST_SWAP_ALLOC_SIZE), BM_OK);
     tm->queryHasRegisteredResult = false;
     char src[16] = "safe_put";
     char dst[16] = {};
@@ -403,7 +438,7 @@ TEST_F(HybmDataOpDeviceUrmaTest, DataCopySafePutUsesSwapWhenLocalSourceIsNotRegi
 
 TEST_F(HybmDataOpDeviceUrmaTest, DataCopySafeGetUsesSwapWhenLocalDestinationIsNotRegistered)
 {
-    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_EQ(dataOp->InitializeWithSwap(TEST_SWAP_ALLOC_SIZE), BM_OK);
     tm->queryHasRegisteredResult = false;
     char src[16] = "safe_get";
     char dst[16] = {};
@@ -499,7 +534,7 @@ TEST_F(HybmDataOpDeviceUrmaTest, BatchDataCopyAllLocalDirectionsSucceed)
 
 TEST_F(HybmDataOpDeviceUrmaTest, BatchDataCopyUsesDefaultPathWhenLocalMemoryIsNotRegistered)
 {
-    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_EQ(dataOp->InitializeWithSwap(TEST_SWAP_ALLOC_SIZE), BM_OK);
     tm->queryHasRegisteredResult = false;
     char src0[8] = "s0";
     char src1[8] = "s1";
@@ -602,4 +637,79 @@ TEST_F(HybmDataOpDeviceUrmaTest, BatchDataCopyRejectsUnsupportedDirection)
     ExtOptions options{};
 
     EXPECT_EQ(dataOp->BatchDataCopy(params, HYBM_DATA_COPY_DIRECTION_AUTO, options), BM_ERROR);
+}
+
+TEST_F(HybmDataOpDeviceUrmaTest, InitializeSkipsSwapAllocationWhenSwapSpaceSizeIsZero)
+{
+    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_TRUE(dataOp->inited_);
+    EXPECT_EQ(dataOp->urmaSwapSpaceSize_, 0ULL);
+    EXPECT_EQ(dataOp->urmaSwapBaseAddr_, nullptr);
+    EXPECT_EQ(dataOp->urmaSwapMemoryAllocator_, nullptr);
+    EXPECT_EQ(tm->registerMemoryRegionCount, 0U);
+}
+
+TEST_F(HybmDataOpDeviceUrmaTest, InitializeIsIdempotentWhenSwapSpaceSizeIsZero)
+{
+    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_TRUE(dataOp->inited_);
+    EXPECT_EQ(tm->registerMemoryRegionCount, 0U);
+
+    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    EXPECT_TRUE(dataOp->inited_);
+    EXPECT_EQ(tm->registerMemoryRegionCount, 0U);
+
+    dataOp->UnInitialize();
+    EXPECT_FALSE(dataOp->inited_);
+    EXPECT_EQ(tm->unregisterMemoryRegionCount, 0U);
+}
+
+TEST_F(HybmDataOpDeviceUrmaTest, SafePutReturnsErrorWhenSwapAllocatorIsNotInitialized)
+{
+    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    tm->queryHasRegisteredResult = false;
+    char src[16] = "no_swap_put";
+    char dst[16] = {};
+    hybm_copy_params params{src, dst, sizeof(src)};
+    ExtOptions options{};
+    options.srcRankId = LOCAL_RANK;
+    options.destRankId = REMOTE_RANK;
+
+    EXPECT_EQ(dataOp->DataCopy(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST, options), BM_ERROR);
+    EXPECT_GE(tm->queryHasRegisteredCount, 1U);
+    EXPECT_EQ(tm->writeRemoteCount, 0U);
+}
+
+TEST_F(HybmDataOpDeviceUrmaTest, SafeGetReturnsErrorWhenSwapAllocatorIsNotInitialized)
+{
+    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    tm->queryHasRegisteredResult = false;
+    char src[16] = "no_swap_get";
+    char dst[16] = {};
+    hybm_copy_params params{src, dst, sizeof(src)};
+    ExtOptions options{};
+    options.srcRankId = REMOTE_RANK;
+    options.destRankId = LOCAL_RANK;
+
+    EXPECT_EQ(dataOp->DataCopy(params, HYBM_GLOBAL_HOST_TO_LOCAL_HOST, options), BM_ERROR);
+    EXPECT_GE(tm->queryHasRegisteredCount, 1U);
+    EXPECT_EQ(tm->readRemoteCount, 0U);
+}
+
+TEST_F(HybmDataOpDeviceUrmaTest, BatchDataCopyDefaultPathFailsWhenSwapAllocatorIsNotInitialized)
+{
+    EXPECT_EQ(dataOp->Initialize(), BM_OK);
+    tm->queryHasRegisteredResult = false;
+    char src[8] = "s0";
+    char dst[8] = {};
+    void *sources[1] = {src};
+    void *destinations[1] = {dst};
+    uint64_t sizes[1] = {sizeof(src)};
+    hybm_batch_copy_params params{sources, destinations, sizes, 1};
+    ExtOptions options{};
+    options.srcRankId = LOCAL_RANK;
+    options.destRankId = REMOTE_RANK;
+
+    EXPECT_EQ(dataOp->BatchDataCopy(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST, options), BM_ERROR);
+    EXPECT_EQ(tm->writeRemoteCount, 0U);
 }

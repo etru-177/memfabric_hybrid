@@ -24,9 +24,11 @@
 #include "hybm_gva.h"
 #include "hybm_stream_manager.h"
 #include "hybm_va_manager.h"
+#include "mf_env_define.h"
+#include "mf_env_util.h"
 
 namespace {
-constexpr uint64_t URMA_SWAP_SPACE_SIZE = 1024 * 1024 * 128;
+constexpr uint64_t URMA_SWAP_SPACE_SIZE = 0;
 }
 
 namespace ock {
@@ -74,23 +76,30 @@ Result DataOpDeviceURMA::Initialize() noexcept
     if (inited_) {
         return BM_OK;
     }
+    urmaSwapSpaceSize_ =
+        MfEnvUtil::GetOptionalUintOrDefault(env::MF_HYBM_URMA_SWAP_SPACE_SIZE, URMA_SWAP_SPACE_SIZE) * MB;
+    if (urmaSwapSpaceSize_ == 0) {
+        BM_LOG_INFO("HYBM_URMA_SWAP_SPACE_SIZE is 0, skip swap memory allocation");
+        inited_ = true;
+        return BM_OK;
+    }
     auto ret = AllocSwapMemory();
     if (ret != BM_OK) {
         return ret;
     }
     transport::TransportMemoryRegion input;
     input.addr = reinterpret_cast<uint64_t>(urmaSwapBaseAddr_);
-    input.size = URMA_SWAP_SPACE_SIZE;
+    input.size = urmaSwapSpaceSize_;
     input.flags = transport::REG_MR_FLAG_HBM; // 先使用hbm swap把dram/hbm池全部调通
     if (transportManager_ != nullptr) {
         ret = transportManager_->RegisterMemoryRegion(input);
         if (ret != BM_OK) {
-            BM_LOG_ERROR("Failed to register urma swap memory, size: " << URMA_SWAP_SPACE_SIZE);
+            BM_LOG_ERROR("Failed to register urma swap memory, size: " << urmaSwapSpaceSize_);
             FreeSwapMemory();
             return BM_MALLOC_FAILED;
         }
     }
-    urmaSwapMemoryAllocator_ = std::make_shared<RbtreeRangePool>((uint8_t *)urmaSwapBaseAddr_, URMA_SWAP_SPACE_SIZE);
+    urmaSwapMemoryAllocator_ = std::make_shared<RbtreeRangePool>((uint8_t *)urmaSwapBaseAddr_, urmaSwapSpaceSize_);
     inited_ = true;
     return BM_OK;
 }
@@ -126,14 +135,14 @@ Result DataOpDeviceURMA::AllocSwapMemory()
 {
     void *ptr = nullptr;
     auto ret = DlAclApi::AclrtMalloc(
-        &ptr, URMA_SWAP_SPACE_SIZE,
+        &ptr, urmaSwapSpaceSize_,
         static_cast<aclrtMemMallocPolicy>(ACL_MEM_TYPE_HIGH_BAND_WIDTH | ACL_MEM_MALLOC_HUGE_ONLY));
     if (ret != 0) {
-        BM_LOG_ERROR("Failed to AclrtMallocHost urma swap memory, size: " << URMA_SWAP_SPACE_SIZE);
+        BM_LOG_ERROR("Failed to AclrtMallocHost urma swap memory, size: " << urmaSwapSpaceSize_);
         return BM_MALLOC_FAILED;
     }
     ret = HybmVaManager::GetInstance().AddVaInfo(
-        {0, reinterpret_cast<uint64_t>(ptr), 0, URMA_SWAP_SPACE_SIZE, HYBM_MEM_TYPE_DEVICE}, rankId_);
+        {0, reinterpret_cast<uint64_t>(ptr), 0, urmaSwapSpaceSize_, HYBM_MEM_TYPE_DEVICE}, rankId_);
     if (ret != 0) {
         BM_LOG_ERROR("add va info failed, va:" << ptr << " ret:" << ret);
         FreeSwapMemory();
@@ -895,8 +904,11 @@ Result DataOpDeviceURMA::SafePut(const void *srcVA, void *destVA, uint64_t lengt
         BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "Failed to copy urma", ret);
         return ret;
     }
+    BM_ASSERT_LOG_AND_RETURN(urmaSwapMemoryAllocator_ != nullptr,
+                             "urmaSwapMemoryAllocator_ is not initialized, swap space size: " << urmaSwapSpaceSize_,
+                             BM_ERROR);
     while (remainingLength > 0) {
-        uint64_t currentChunkSize = std::min(remainingLength, URMA_SWAP_SPACE_SIZE);
+        uint64_t currentChunkSize = std::min(remainingLength, urmaSwapSpaceSize_);
         auto tmpRdmaMemory = urmaSwapMemoryAllocator_->Allocate(currentChunkSize);
         auto tmpSwap = tmpRdmaMemory.Address();
         BM_ASSERT_LOG_AND_RETURN(tmpSwap != nullptr, "Failed to malloc temp buffer", BM_MALLOC_FAILED);
@@ -929,8 +941,11 @@ Result DataOpDeviceURMA::SafeGet(const void *srcVA, void *destVA, uint64_t lengt
         BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "Failed to copy urma", ret);
         return ret;
     }
+    BM_ASSERT_LOG_AND_RETURN(urmaSwapMemoryAllocator_ != nullptr,
+                             "urmaSwapMemoryAllocator_ is not initialized, swap space size: " << urmaSwapSpaceSize_,
+                             BM_ERROR);
     while (remainingLength > 0) {
-        uint64_t currentChunkSize = std::min(remainingLength, URMA_SWAP_SPACE_SIZE);
+        uint64_t currentChunkSize = std::min(remainingLength, urmaSwapSpaceSize_);
         auto tmpRdmaMemory = urmaSwapMemoryAllocator_->Allocate(currentChunkSize);
         auto tmpSwap = tmpRdmaMemory.Address();
         BM_ASSERT_LOG_AND_RETURN(tmpSwap != nullptr, "[CopyGD2LH] Failed to malloc temp buffer", BM_MALLOC_FAILED);
