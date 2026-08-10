@@ -211,6 +211,7 @@ private:
     GroupListenContext<SmemGroupInfo> eventCtx_;
     std::atomic_uint32_t currentLeaveCount_{0};
     std::atomic_uint32_t currentStopCount_{0};
+    uint32_t leaveRank_{0};
 
     bool bmexNeedRefresh_ = false; // set on watch break, cleared after first BMEX re-write
 

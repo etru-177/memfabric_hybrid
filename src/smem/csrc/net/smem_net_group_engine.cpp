@@ -118,7 +118,8 @@ Result SmemNetGroupEngine::StoreGetCanInterrupt(const std::string &key, std::str
     while ((nowT = mf::MonotonicTime::TimeUs()) < waitT) {
         ret = store_->Get(key, value, SMEM_GROUP_MS_TO_US); // wait 1s
         if (currentLeaveCount_.load() > 0 || currentLinkDownCount_.load() > 0) {
-            SM_LOG_WARN("has rank leave or link down, stop get wait! key: " << store_->GetCompleteKey(key));
+            SM_LOG_WARN("has rank leave or link down, stop get wait! key: " << store_->GetCompleteKey(key)
+                                                                            << " rank:" << leaveRank_);
             return SM_INNER_BUSY;
         }
         if (currentStopCount_.load() > 0) {
@@ -1226,6 +1227,7 @@ void SmemNetGroupEngine::GroupWatchCb(int result, const std::string &key, const 
         [this, ctxRet, &info]() {
             eventCtx_.ret |= ctxRet;
             if (ctxRet == SM_OK && info->version > 0) {
+                leaveRank_ = info->targetRank;
                 if (info->curEvent == LEAVE_EVENT || info->curEvent == LINK_DOWN_EVENT) {
                     currentLeaveCount_.fetch_add(1U);
                 } else if (info->curEvent == STOP_EVENT) {
