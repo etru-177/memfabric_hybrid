@@ -53,6 +53,7 @@ using tsdOpenFunc = uint32_t (*)(uint32_t, uint32_t);
 using raPollCqFunc = int (*)(void *, bool, uint32_t, void *);
 using raGetNotifyBaseAddrFunc = int (*)(void *, uint64_t *, uint64_t *);
 using raGetNotifyMrInfoFunc = int (*)(void *, HccpMrInfo *);
+using raSetQpAttrQosFunc = int (*)(void *, struct QosAttr *);
 
 class DlHccpApi {
 public:
@@ -275,6 +276,14 @@ public:
         return gRaGetNotifyMrInfo(rdmaHandle, info);
     }
 
+    static inline int RaSetQpAttrQos(void *qpHandle, struct QosAttr *attr)
+    {
+        if (gRaSetQpAttrQos == nullptr) {
+            return BM_UNDER_API_UNLOAD;
+        }
+        return gRaSetQpAttrQos(qpHandle, attr);
+    }
+
 private:
     static std::mutex gMutex;
     static bool gLoaded;
@@ -309,6 +318,7 @@ private:
     static raSendWrV2Func gRaSendWrV2;
     static raGetNotifyBaseAddrFunc gRaGetNotifyBaseAddr;
     static raGetNotifyMrInfoFunc gRaGetNotifyMrInfo;
+    static raSetQpAttrQosFunc gRaSetQpAttrQos;
 
     static tsdOpenFunc gTsdOpen;
 };

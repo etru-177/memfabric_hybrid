@@ -49,6 +49,7 @@ raSendWrFunc DlHccpApi::gRaSendWr;
 raSendWrV2Func DlHccpApi::gRaSendWrV2;
 raGetNotifyBaseAddrFunc DlHccpApi::gRaGetNotifyBaseAddr;
 raGetNotifyMrInfoFunc DlHccpApi::gRaGetNotifyMrInfo;
+raSetQpAttrQosFunc DlHccpApi::gRaSetQpAttrQos;
 
 tsdOpenFunc DlHccpApi::gTsdOpen;
 
@@ -116,6 +117,7 @@ Result DlHccpApi::LoadLibrary()
     DL_LOAD_SYM_ALT(gRaGetNotifyBaseAddr, raGetNotifyBaseAddrFunc, raHandle, "ra_get_notify_base_addr",
                     "RaGetNotifyBaseAddr");
     DL_LOAD_SYM_ALT(gRaGetNotifyMrInfo, raGetNotifyMrInfoFunc, raHandle, "ra_get_notify_mr_info", "RaGetNotifyMrInfo");
+    DL_LOAD_SYM_ALT(gRaSetQpAttrQos, raSetQpAttrQosFunc, raHandle, "ra_set_qp_attr_qos", "RaSetQpAttrQos");
 
     DL_LOAD_SYM(gTsdOpen, tsdOpenFunc, tsdHandle, "TsdOpen");
     BM_LOG_INFO("LoadLibrary for DlHccpApi success");
@@ -157,6 +159,7 @@ void DlHccpApi::CleanupLibrary()
     gRaGetNotifyBaseAddr = nullptr;
     gRaGetNotifyMrInfo = nullptr;
     gRaQpCreateWithAttrs = nullptr;
+    gRaSetQpAttrQos = nullptr;
 
     if (raHandle != nullptr) {
         dlclose(raHandle);

@@ -455,6 +455,19 @@ struct send_wr_rsp {
         struct db_info db;       /**< doorbell info */
     };
 };
+
+static const uint32_t HCCL_RDMA_TC_DEFAULT = 132; // 默认的traffic class为132（33*4）
+static const uint32_t HCCL_RDMA_TC_MAX = 255;
+static const uint32_t HCCL_RDMA_TC_BASE = 4;    // RDMATrafficClass需要时4的整数倍
+static const uint32_t HCCL_RDMA_SL_DEFAULT = 4; // 默认的server level为4
+static const uint32_t HCCL_RDMA_SL_MAX = 7;
+
+#define RA_QOS_ATTR_RESERVED 6
+struct QosAttr {
+    unsigned char tc; // traffic class
+    unsigned char sl; // priority(service level)
+    unsigned char reserved[RA_QOS_ATTR_RESERVED];
+};
 /**
  * @brief handle to HCCL communicator
  */

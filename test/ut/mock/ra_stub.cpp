@@ -189,4 +189,9 @@ int ra_qp_create_with_attrs(void *rdmaHandle, struct HccpQpExtAttrs *extAttrs, v
 {
     return 0;
 }
+
+int ra_set_qp_attr_qos(void *qpHandle, struct QosAttr *attr)
+{
+    return 0;
+}
 }

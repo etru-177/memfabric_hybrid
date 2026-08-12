@@ -54,6 +54,7 @@ private:
     int CreateConnectionToServers(const std::set<uint32_t> &newServers) noexcept;
     void RemoveRanksProcess(const std::set<uint32_t> &ranks) noexcept;
     void FillHccpTag(char *output);
+    void TrySetQos();
 
 private:
     std::atomic<bool> started_{false};
@@ -71,6 +72,7 @@ private:
     std::set<uint32_t> newServers_;
     std::set<uint32_t> removedClientRanks_;
     std::set<uint32_t> removedServerRanks_;
+    struct QosAttr qosAttr_ {};
     uint32_t userDeviceId_{0};
 };
 

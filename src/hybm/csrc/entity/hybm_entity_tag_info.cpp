@@ -16,7 +16,7 @@
 namespace ock {
 namespace mf {
 
-Result HybmEntityTagInfo::TagInfoInit(hybm_options option)
+Result HybmEntityTagInfo::TagInfoInit(const hybm_options &option)
 {
     rankTagInfo_.reserve(option.rankCount);
     auto ret = AddRankTag(option.rankId, option.tag);

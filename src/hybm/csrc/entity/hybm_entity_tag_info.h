@@ -23,7 +23,7 @@ namespace mf {
 
 class HybmEntityTagInfo {
 public:
-    Result TagInfoInit(hybm_options option);
+    Result TagInfoInit(const hybm_options &option);
     /**
      * AddTagOpInfo
      * @param info eg: tag0:opType:tag1,tag0:opType:tag2

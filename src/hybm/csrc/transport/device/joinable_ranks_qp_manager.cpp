@@ -15,6 +15,7 @@
 #include "dl_hccp_api.h"
 #include "dl_acl_api.h"
 #include "joinable_ranks_qp_manager.h"
+#include "mf_env_util.h"
 
 namespace ock {
 namespace mf {
@@ -95,6 +96,7 @@ int JoinableRanksQpManager::Startup(void *rdma) noexcept
     }
 
     rdmaHandle_ = rdma;
+    TrySetQos();
     auto ret = StartServerSide();
     if (ret != BM_OK) {
         BM_LOG_ERROR("start server side failed: " << ret);
@@ -399,6 +401,24 @@ int JoinableRanksQpManager::WaitSocketConnections(const std::set<uint32_t> &newR
     return BM_OK;
 }
 
+void JoinableRanksQpManager::TrySetQos()
+{
+    uint32_t tc = MfEnvUtil::GetOptionalUintOrDefault("HCCL_RDMA_TC", HCCL_RDMA_TC_DEFAULT);
+    uint32_t sl = MfEnvUtil::GetOptionalUintOrDefault("HCCL_RDMA_SL", HCCL_RDMA_SL_DEFAULT);
+    if (tc > HCCL_RDMA_TC_MAX || (tc % HCCL_RDMA_TC_BASE != 0)) {
+        BM_LOG_WARN("HCCL_RDMA_TC is invalid:" << tc);
+        tc = HCCL_RDMA_TC_DEFAULT;
+    }
+    if (sl > HCCL_RDMA_SL_MAX) {
+        BM_LOG_WARN("HCCL_RDMA_SL is invalid:" << sl);
+        sl = HCCL_RDMA_SL_DEFAULT;
+    }
+
+    qosAttr_.tc = tc;
+    qosAttr_.sl = sl;
+    BM_LOG_INFO("TrySetQos tc:" << static_cast<uint32_t>(qosAttr_.tc) << " sl:" << static_cast<uint32_t>(qosAttr_.sl));
+}
+
 void JoinableRanksQpManager::MakeQpConnections(const std::set<uint32_t> &newRanks) noexcept
 {
     if (newRanks.empty()) {
@@ -418,6 +438,11 @@ void JoinableRanksQpManager::MakeQpConnections(const std::set<uint32_t> &newRank
                 BM_LOG_ERROR("create QP to " << rankId << " failed: " << ret);
                 delete info;
                 continue;
+            }
+            ret = DlHccpApi::RaSetQpAttrQos(qpHandle, &qosAttr_);
+            if (ret != 0) {
+                BM_LOG_WARN("set qos failed, tc:" << static_cast<uint32_t>(qosAttr_.tc)
+                                                  << " sl:" << static_cast<uint32_t>(qosAttr_.sl) << " ret:" << ret);
             }
 
             connections_[rankId].qpHandle = qpHandle;
