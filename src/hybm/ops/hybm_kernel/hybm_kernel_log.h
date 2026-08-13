@@ -29,7 +29,7 @@
 extern "C" {
 #endif
 
-#define HYBM_KERNEL_MODULE_NAME static_cast<int32_t>(GE)
+#define HYBM_KERNEL_MODULE_NAME static_cast<int32_t>(APP)
 #define HYBM_KERNEL_LOG_HEADER  "[HYBM]"
 
 class HybmKernelLog {

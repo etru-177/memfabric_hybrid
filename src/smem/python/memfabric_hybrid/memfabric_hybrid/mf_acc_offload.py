@@ -11,7 +11,6 @@
 # See the Mulan PSL v2 for more details.
 
 import ctypes
-import torch
 from _pymf_acc_offload import offload
 
 sparse_copy_impl = offload.sparse_copy
@@ -19,6 +18,8 @@ group_pack_copy_impl = offload.group_pack_copy
 
 
 def empty(sizes, dtype=None, pin_memory=False):
+    import torch
+
     if dtype is None:
         dtype = torch.bfloat16
 

@@ -115,13 +115,14 @@ if ! $FAST_MODE; then
             "*/src/hybm/csrc/transport/device/urma/device_urma_eid_reader.cpp"
             "*/util/csrc/ptracer/tracers/*"
     )
-    lcov -d "$BUILD_PATH" --c --output-file "$COVERAGE_PATH"/coverage.info -rc lcov_branch_coverage=1 --rc lcov_excl_br_line="LCOV_EXCL_BR_LINE|SM_LOG*|SM_ASSERT*|BM_LOG*|BM_ASSERT*|SM_VALIDATE_*|ASSERT*|LOG_*" --rc stop_on_error=0
-    lcov -e "$COVERAGE_PATH"/coverage.info "*/src/*" -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1 --rc stop_on_error=0 || true
-    lcov -r "$COVERAGE_PATH"/coverage.info "${EXCLUDE_DIRS[@]}" -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1 --rc stop_on_error=0 || true
-    genhtml -o "$COVERAGE_PATH"/result "$COVERAGE_PATH"/coverage.info --show-details --legend --rc lcov_branch_coverage=1 --rc stop_on_error=0 || true
+    lcov --quiet -d "$BUILD_PATH" --c --output-file "$COVERAGE_PATH"/coverage.info -rc lcov_branch_coverage=1 --rc lcov_excl_br_line="LCOV_EXCL_BR_LINE|SM_LOG*|SM_ASSERT*|BM_LOG*|BM_ASSERT*|SM_VALIDATE_*|ASSERT*|LOG_*" --rc stop_on_error=0
+    lcov --quiet -e "$COVERAGE_PATH"/coverage.info "*/src/*" -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1 --rc stop_on_error=0 || true
+    lcov --quiet -r "$COVERAGE_PATH"/coverage.info "${EXCLUDE_DIRS[@]}" -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1 --rc stop_on_error=0 || true
+    COV_SUMMARY=$(lcov -r "$COVERAGE_PATH"/coverage.info -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1) || exit $?
+    genhtml --quiet -o "$COVERAGE_PATH"/result "$COVERAGE_PATH"/coverage.info --show-details --legend --rc lcov_branch_coverage=1 --rc stop_on_error=0 || true
 
-    lines_rate=$(lcov -r "$COVERAGE_PATH"/coverage.info -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1 | grep lines | grep -Eo "[0-9\.]+%" | tr -d '%')
-    branches_rate=$(lcov -r "$COVERAGE_PATH"/coverage.info -o "$COVERAGE_PATH"/coverage.info --rc lcov_branch_coverage=1 | grep branches | grep -Eo "[0-9\.]+%" | tr -d '%')
+    lines_rate=$(echo "$COV_SUMMARY" | grep lines | grep -Eo "[0-9\.]+%" | tr -d '%')
+    branches_rate=$(echo "$COV_SUMMARY" | grep branches | grep -Eo "[0-9\.]+%" | tr -d '%')
     echo "lines    coverage rate: ${lines_rate:-<unavailable>}%"
     echo "branches coverage rate: ${branches_rate:-<unavailable>}%"
 
