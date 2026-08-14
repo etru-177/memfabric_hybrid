@@ -744,22 +744,33 @@ int32_t MemEntityDefault::RemoveImported(const std::vector<uint32_t> &ranks) noe
         return BM_NOT_INITIALIZED;
     }
 
+    std::vector<uint32_t> ranksToRemove = ranks;
+    if (std::find(ranks.begin(), ranks.end(), options_.rankId) != ranks.end()) {
+        BM_LOG_INFO("ranks contain self rankId:" << options_.rankId << ", remove all imported ranks.");
+        std::unique_lock<std::mutex> uniqueLock{importMutex_};
+        ranksToRemove.clear();
+        ranksToRemove.reserve(importedRanks_.size());
+        for (const auto &item : importedRanks_) {
+            ranksToRemove.push_back(item.first);
+        }
+    }
+
     if (transportManager_ != nullptr) {
-        auto ret = transportManager_->RemoveRanks(ranks);
+        auto ret = transportManager_->RemoveRanks(ranksToRemove);
         if (ret != BM_OK) {
             BM_LOG_WARN("unable to transport remove ranks : " << ret);
         }
     }
 
     if (hbmSegment_ != nullptr) {
-        auto ret = hbmSegment_->RemoveImported(ranks);
+        auto ret = hbmSegment_->RemoveImported(ranksToRemove);
         if (ret != BM_OK) {
             return ret;
         }
     }
 
     if (dramSegment_ != nullptr) {
-        auto ret = dramSegment_->RemoveImported(ranks);
+        auto ret = dramSegment_->RemoveImported(ranksToRemove);
         if (ret != BM_OK) {
             return ret;
         }
@@ -771,7 +782,7 @@ int32_t MemEntityDefault::RemoveImported(const std::vector<uint32_t> &ranks) noe
 
     {
         std::unique_lock<std::mutex> uniqueLock{importMutex_};
-        for (auto rank : ranks) {
+        for (auto rank : ranksToRemove) {
             importedRanks_.erase(rank);
             importedMemories_.erase(rank);
         }

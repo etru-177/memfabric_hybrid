@@ -1128,7 +1128,7 @@ void AccStoreServer::CheckerThreadTask() noexcept
         }
         lockerGuard.unlock();
         for (auto linkId : brokenLinks) {
-            LinkBrokenHandler(linkId); // private func, locks storeMutex_ internally
+            accTcpServer_->BreakLink(linkId); // private func, locks storeMutex_ internally
         }
         lockerGuard.lock();
         brokenLinks.clear();

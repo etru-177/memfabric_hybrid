@@ -121,6 +121,14 @@ public:
                                 AccTcpLinkComplexPtr &newLink);
 
     /**
+     * @brief Break the link with the specified linkId
+     *
+     * @param linkId        [in] id of the link to be broken
+     * @return 0 if successfully
+     */
+    virtual Result BreakLink(uint32_t linkId) = 0;
+
+    /**
      * @brief Register the handler for handling new request
      * @param msgType      [in] message type of the handler to be handled
      * @param h            [in] handler

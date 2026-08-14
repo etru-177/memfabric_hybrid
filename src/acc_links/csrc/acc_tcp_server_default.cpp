@@ -739,11 +739,27 @@ Result AccTcpServerDefault::HandleLinkBroken(const AccTcpLinkDefaultPtr &link)
         WorkerLinkCntUpdate(link->GetWorkerIndex());
 
         link->SetWorkerIndex(0);
+        link->Close();
         delayCleanup_->Enqueue(link.Get());
         connectedLinks_.erase(link->Id());
     }
 
     return ACC_OK;
+}
+
+Result AccTcpServerDefault::BreakLink(uint32_t linkId)
+{
+    AccTcpLinkDefaultPtr link;
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        auto iter = connectedLinks_.find(linkId);
+        if (iter == connectedLinks_.end()) {
+            LOG_ERROR("Failed to break link as linkId " << linkId << " not found in connectedLinks");
+            return ACC_INVALID_PARAM;
+        }
+        link = iter->second;
+    }
+    return HandleLinkBroken(link);
 }
 
 } // namespace acc

@@ -36,6 +36,8 @@ public:
     Result ConnectToPeerServer(const std::string &peerIp, uint16_t port, const AccConnReq &req, uint32_t maxRetryTimes,
                                AccTcpLinkComplexPtr &newLink) override;
 
+    Result BreakLink(uint32_t linkId) override;
+
     void RegisterNewRequestHandler(int16_t msgType, const AccNewReqHandler &h) override;
     void RegisterRequestSentHandler(int16_t msgType, const AccReqSentHandler &h) override;
     void RegisterLinkBrokenHandler(const AccLinkBrokenHandler &h) override;

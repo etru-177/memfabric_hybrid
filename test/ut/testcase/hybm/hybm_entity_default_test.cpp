@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 #include <mockcpp/mockcpp.hpp>
+#include <algorithm>
 #include <cstring>
 
 #define private   public
@@ -65,6 +66,7 @@ constexpr int32_t TEST_DEVICE_ID_CTX_SUCCESS = 2303;
 constexpr int32_t TEST_DEVICE_ID_REMOVE_HBM_FAIL = 2400;
 constexpr int32_t TEST_DEVICE_ID_REMOVE_DRAM_FAIL = 2401;
 constexpr int32_t TEST_DEVICE_ID_REMOVE_CLEANUP = 2402;
+constexpr int32_t TEST_DEVICE_ID_REMOVE_CONTAINS_SELF = 2403;
 constexpr int32_t TEST_DEVICE_ID_COPY_TRANS = 2500;
 constexpr int32_t TEST_DEVICE_ID_COPY_FAIL = 2502;
 constexpr int32_t TEST_DEVICE_ID_COPY_NONTRANS = 25021;
@@ -313,6 +315,18 @@ public:
         removeCalled++;
         return BM_ERROR;
     }
+    int removeCalled{0};
+};
+
+class FakeTransportManagerCaptureRanks : public FakeTransportManager {
+public:
+    ock::mf::Result RemoveRanks(const std::vector<uint32_t> &removedRanks) override
+    {
+        capturedRanks = removedRanks;
+        removeCalled++;
+        return BM_OK;
+    }
+    std::vector<uint32_t> capturedRanks{};
     int removeCalled{0};
 };
 
@@ -778,6 +792,68 @@ TEST_F(HybmEntityDefaultTest, RemoveImported_CleanupAndEraseAndRemoveRanks)
     EXPECT_EQ(entity.importedMemories_.count(TEST_RANK_1), 0U);
     EXPECT_EQ(entity.importedMemories_.count(r2RankId), 0U);
     EXPECT_EQ(trans->removeCalled, 1);
+}
+
+// 测试当 ranks 包含自身 rank 时，移除所有 importedRanks_ 中的 rank
+TEST_F(HybmEntityDefaultTest, RemoveImported_RanksContainSelf_RemovesAllImportedRanks)
+{
+    int32_t deviceId = TEST_DEVICE_ID_REMOVE_CONTAINS_SELF;
+    uint32_t totalCnt = TEST_RANK_COUNT_3;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    entity.options_.rankId = TEST_RANK_0;
+    entity.options_.rankCount = totalCnt;
+
+    // segments succeed
+    ock::mf::MemSegmentOptions optionsHbm{};
+    optionsHbm.segType = ock::mf::HYBM_MST_HBM;
+    optionsHbm.rankCnt = totalCnt;
+    auto hbmSeg = std::make_shared<ock::mf::HybmVmmBasedSegment>(optionsHbm, entity.id_);
+    entity.hbmSegment_ = hbmSeg;
+    MOCKER_CPP(&ock::mf::HybmVmmBasedSegment::RemoveImported,
+               int32_t(*)(ock::mf::HybmVmmBasedSegment *, const std::vector<uint32_t> &))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    // data operator cleanup
+    auto dop = std::make_shared<FakeDataOperator>();
+    entity.dataOperator_ = dop;
+
+    // transport manager captures the ranks passed to RemoveRanks
+    auto trans = std::make_shared<FakeTransportManagerCaptureRanks>();
+    entity.transportManager_ = trans;
+
+    // populate maps with three imported ranks (none of them is self rank)
+    ock::mf::EntityExportInfo r1{};
+    r1.rankId = TEST_RANK_1;
+    entity.importedRanks_[TEST_RANK_1] = r1;
+    entity.importedMemories_[TEST_RANK_1] = {};
+    ock::mf::EntityExportInfo r2{};
+    r2.rankId = TEST_RANK_2;
+    entity.importedRanks_[TEST_RANK_2] = r2;
+    entity.importedMemories_[TEST_RANK_2] = {};
+    ock::mf::EntityExportInfo r3{};
+    r3.rankId = TEST_RANK_3;
+    entity.importedRanks_[TEST_RANK_3] = r3;
+    entity.importedMemories_[TEST_RANK_3] = {};
+
+    // input ranks only contains self rank, not the imported ones
+    std::vector<uint32_t> ranks{TEST_RANK_0};
+    auto ret = entity.RemoveImported(ranks);
+    EXPECT_EQ(ret, BM_OK);
+    EXPECT_TRUE(dop->cleaned);
+    // all imported ranks should be removed
+    EXPECT_EQ(entity.importedRanks_.count(TEST_RANK_1), 0U);
+    EXPECT_EQ(entity.importedRanks_.count(TEST_RANK_2), 0U);
+    EXPECT_EQ(entity.importedRanks_.count(TEST_RANK_3), 0U);
+    EXPECT_EQ(entity.importedMemories_.count(TEST_RANK_1), 0U);
+    EXPECT_EQ(entity.importedMemories_.count(TEST_RANK_2), 0U);
+    EXPECT_EQ(entity.importedMemories_.count(TEST_RANK_3), 0U);
+    // transport RemoveRanks should be called with all imported ranks, not the input ranks
+    EXPECT_EQ(trans->removeCalled, 1);
+    EXPECT_EQ(trans->capturedRanks.size(), TEST_RANK_COUNT_3);
+    // self rank should not be passed to transport RemoveRanks
+    EXPECT_EQ(std::count(trans->capturedRanks.begin(), trans->capturedRanks.end(), TEST_RANK_0), 0);
 }
 
 TEST_F(HybmEntityDefaultTest, CopyData_TransScene_UsesLocateAddrAndRank)
