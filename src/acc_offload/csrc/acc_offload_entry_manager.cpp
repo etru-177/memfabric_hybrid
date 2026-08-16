@@ -98,14 +98,23 @@ void AccOffloadEntryManager::FreeHost(void *ptr)
     entry_->FreeHost(ptr);
 }
 
+int32_t AccOffloadEntryManager::GetDva(uint64_t hostPtr, uint64_t *dvaPtr)
+{
+    if (entry_ == nullptr || dvaPtr == nullptr) {
+        OFFLOAD_LOG_ERROR("entry is null or dvaPtr is null, get dva failed, hostPtr: " << hostPtr);
+        return OFFLOAD_ERROR;
+    }
+    return entry_->GetDva(hostPtr, dvaPtr);
+}
+
 int32_t AccOffloadEntryManager::SparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr,
-                                           uint8_t devIdx)
+                                           uint8_t devIdx, uint32_t flag)
 {
     if (entry_ == nullptr) {
         OFFLOAD_LOG_ERROR("entry is null, sparse copy failed");
         return OFFLOAD_ERROR;
     }
-    return entry_->SparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, devIdx);
+    return entry_->SparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, devIdx, flag);
 }
 
 int32_t AccOffloadEntryManager::GroupPackCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs,

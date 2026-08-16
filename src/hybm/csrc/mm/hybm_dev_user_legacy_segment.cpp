@@ -10,6 +10,7 @@
  * See the Mulan PSL v2 for more details.
 */
 #include "dl_acl_api.h"
+#include "dl_hal_api.h"
 #include "hybm_networks_common.h"
 #include "hybm_ex_info_transfer.h"
 #include "hybm_va_manager.h"
@@ -85,6 +86,14 @@ Result HybmDevUserLegacySegment::RegisterMemory(const void *addr, uint64_t size,
         }
     }
 
+    /* host memory (e.g. a dram pool owned by another component) takes a dedicated
+     * path: RtIpcSetMemoryName below only accepts device memory. */
+    hybm_mem_type memType = HYBM_MEM_TYPE_BUTT;
+    auto typeRet = HybmVaManager::GetInstance().GetLocalMemoryType(reinterpret_cast<uint64_t>(addr), memType);
+    if (typeRet == BM_OK && memType == HYBM_MEM_TYPE_HOST) {
+        return RegisterHostMemory(addr, size, slice);
+    }
+
     char name[DEVICE_SHM_NAME_SIZE + 1U]{};
     int32_t ret;
     if (options_.shared) {
@@ -133,6 +142,66 @@ Result HybmDevUserLegacySegment::RegisterMemory(const void *addr, uint64_t size,
     return BM_OK;
 }
 
+Result HybmDevUserLegacySegment::RegisterHostMemory(const void *addr, uint64_t size, MemSlicePtr &slice) noexcept
+{
+    void *dva = nullptr;
+    bool selfRegistered = false; /* device mapping created here (vs reused from a vmm segment) */
+    bool needDeviceVa = false;
+#if defined(ASCEND_NPU)
+    needDeviceVa = (options_.dataOpType &
+                    (HYBM_DOP_TYPE_DEVICE_RDMA | HYBM_DOP_TYPE_DEVICE_URMA | HYBM_DOP_TYPE_DEVICE_UBOE)) != 0U;
+    if (needDeviceVa) {
+        /* memory allocated by a vmm segment (e.g. an offload dram pool) already carries a
+         * device mapping (dva == hva via HalMemMap+SetAccess): reuse it instead of
+         * registering a second mapping, which the driver rejects. */
+        auto existDva = HybmVaManager::GetInstance().TransformVa(reinterpret_cast<uint64_t>(addr), HVM_HVA, HVM_DVA);
+        if (existDva != 0) {
+            dva = reinterpret_cast<void *>(existDva);
+            BM_LOG_INFO("reuse existing device mapping, addr: 0x" << std::hex << addr << " dva: 0x" << existDva);
+        } else {
+            auto regRet =
+                DlHalApi::HalHostRegister(const_cast<void *>(addr), size, HOST_MEM_MAP_DEV, logicDeviceId_, &dva);
+            if (regRet != 0) {
+                BM_LOG_ERROR("HalHostRegister failed, ret: " << regRet << " addr: 0x" << std::hex << addr
+                                                             << " size: " << size);
+                return regRet;
+            }
+            selfRegistered = true;
+        }
+    }
+#endif
+
+    std::unique_lock<std::mutex> uniqueLock{mutex_};
+    uint64_t gva = reinterpret_cast<uint64_t>(lvaBase_) + allocatedSize_;
+    slice = std::make_shared<MemSlice>(sliceCount_++, HYBM_MEM_TYPE_HOST, MEM_PT_TYPE_SVM, gva,
+                                       reinterpret_cast<uint64_t>(addr), size);
+    /* gva-only registration: the dva/hva maps already hold the allocator's record for this
+     * memory (e.g. the offload vmm pool); a full insert would overlap and be rejected.
+     * GVA-map lookups (rank/direction classification) still work via the new gva below,
+     * while HVA->DVA translation keeps hitting the allocator's original record. */
+    auto ret = HybmVaManager::GetInstance().AddVaInfo(
+        {gva, reinterpret_cast<uint64_t>(dva), reinterpret_cast<uint64_t>(addr), size, HYBM_MEM_TYPE_HOST},
+        options_.rankId, true);
+    if (ret != 0) {
+        BM_LOG_ERROR("AddVaInfo failed, ret: " << ret << " addr: 0x" << std::hex << addr << " size: " << size);
+        slice = nullptr;
+        return ret;
+    }
+
+    /* host slice: no ipc name, no sdma whitelist; peers classify it via the
+     * padding_[0] memType marker in the export info (with shared=false device
+     * slices carry empty names too, so the name alone must not be used). */
+    registerSlices_.emplace(slice->index_, RegisterSlice{slice, std::string()});
+    if (selfRegistered) {
+        hostDvaRegIdx_.insert(slice->index_);
+    }
+    allocatedSize_ += size;
+    uniqueLock.unlock();
+    BM_LOG_INFO("register host memory success, addr: 0x" << std::hex << addr << " size: " << size << " gva: 0x" << gva
+                                                         << " dva: 0x" << reinterpret_cast<uint64_t>(dva));
+    return BM_OK;
+}
+
 Result HybmDevUserLegacySegment::ReleaseSliceMemory(const MemSlicePtr &slice) noexcept
 {
     if (slice == nullptr) {
@@ -144,6 +213,22 @@ Result HybmDevUserLegacySegment::ReleaseSliceMemory(const MemSlicePtr &slice) no
     if (pos == registerSlices_.end()) {
         BM_LOG_ERROR("release slice : " << slice->index_ << " not exist.");
         return BM_INVALID_PARAM;
+    }
+
+    /* host slice (registered via RegisterHostMemory): release the device mapping and
+     * va info instead of the ipc name. Discriminate by memory type, not by the empty
+     * name — with shared=false device slices carry empty names too. Only mappings
+     * created at registration are unregistered here; vmm-pool mappings (reused at
+     * registration) are owned by their allocator. */
+    if (slice->GetMemoryType() == HYBM_MEM_TYPE_HOST) {
+#if defined(ASCEND_NPU)
+        if (hostDvaRegIdx_.erase(slice->index_) > 0) {
+            DlHalApi::HalHostUnregisterEx(reinterpret_cast<void *>(slice->vAddress_), logicDeviceId_, HOST_MEM_MAP_DEV);
+        }
+#endif
+        HybmVaManager::GetInstance().RemoveOneVaInfo(slice->gva_);
+        registerSlices_.erase(pos);
+        return BM_OK;
     }
 
     if (options_.shared) {
@@ -194,6 +279,11 @@ Result HybmDevUserLegacySegment::Export(const MemSlicePtr &slice, std::string &e
     info.rankId = options_.rankId;
     HybmDevLegacySegment::GetDeviceInfo(sdId, info.serverId, info.superPodId);
     std::copy_n(pos->second.name.c_str(), std::min(pos->second.name.size(), sizeof(info.name) - 1), info.name);
+    /* memType marker in the padding: with shared=false device slices and host slices
+     * both carry an empty ipc name, so the importer cannot tell them apart by name.
+     * 1 = host memory, 0 = device memory. Legacy peers ignore the padding bytes, so
+     * the wire format stays compatible. */
+    info.padding_[0] = (pos->second.slice->GetMemoryType() == HYBM_MEM_TYPE_HOST) ? 1 : 0;
     auto ret = LiteralExInfoTranslater<UserHbmExportSliceInfo>{}.Serialize(info, exInfo);
     if (ret != BM_OK) {
         BM_LOG_ERROR("export info failed: " << ret);
@@ -294,7 +384,9 @@ void HybmDevUserLegacySegment::RemoveSliceInfo(const uint32_t rankId) noexcept
             continue;
         }
         auto &sliceInfo = sIt->second;
-        if (options_.shared && CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
+        /* synthetic host keys ("host_gva_*") have no ipc memory to close */
+        if (options_.shared && CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId) &&
+            rIt->second.name.rfind("host_gva_", 0) != 0) {
             void *address = reinterpret_cast<void *>(static_cast<ptrdiff_t>(remoteSlice->vAddress_ << 16 >> 16));
             BM_LOG_INFO("RtIpcCloseMemory start address="
                         << address
@@ -321,7 +413,11 @@ void HybmDevUserLegacySegment::RemoveSliceInfo(const uint32_t rankId) noexcept
 
 Result HybmDevUserLegacySegment::Mmap() noexcept
 {
-    BM_LOG_ERROR("HybmDevUserLegacySegment NOT SUPPORT Mmap");
+    /* By design this segment has no deferred import work (imports complete
+     * inside ImportSliceInfo), so BM_NOT_SUPPORTED is the expected outcome
+     * and the caller (MemEntityDefault::Mmap) tolerates it. Keep the log at
+     * WARN to avoid alarming operators on a normal path. */
+    BM_LOG_WARN("HybmDevUserLegacySegment NOT SUPPORT Mmap");
     return BM_NOT_SUPPORTED;
 }
 
@@ -384,6 +480,9 @@ Result HybmDevUserLegacySegment::ImportDeviceInfo(const std::string &info) noexc
     std::unique_lock<std::mutex> uniqueLock{mutex_};
     if (options_.shared) {
         for (auto &it : registerSlices_) {
+            if (it.second.name.empty()) {
+                continue; /* host slices carry no ipc name and need no sdma whitelist */
+            }
             ret =
                 DlAclApi::RtSetIpcMemorySuperPodPid(it.second.name.c_str(), deviceInfo.sdid, (int *)&deviceInfo.pid, 1);
             if (ret != 0) {
@@ -419,7 +518,16 @@ Result HybmDevUserLegacySegment::ImportSliceInfo(const std::string &info, MemSli
 
     void *address = nullptr;
     std::unique_lock<std::mutex> uniqueLock{mutex_};
-    if (options_.shared && CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
+    if (sliceInfo.padding_[0] == 1) {
+        /* Host slice exported with the padding memType marker: no local mapping
+         * exists on this side. Peers reach this memory cross-node through the GVA
+         * reconstructed from gvaOffset (fabric/GVA addressing over URMA),
+         * never through a locally-usable device address — registering the
+         * exporter's DVA here would poison the local VA table with a foreign
+         * address. Keep vAddress_ null; the GVA-only VA entry registered
+         * below is sufficient for address classification and URMA writes. */
+        address = nullptr;
+    } else if (options_.shared && CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
         if (sliceInfo.devicePhyId != static_cast<uint32_t>(devicePhyId_) &&
             !enablePeerDevices_.test(sliceInfo.devicePhyId)) {
             auto ret = EnableRemotePeerAccess(sliceInfo.devicePhyId);
@@ -441,19 +549,33 @@ Result HybmDevUserLegacySegment::ImportSliceInfo(const std::string &info, MemSli
                                      << ", deviceId=" << devicePhyId_
                                      << ", sliceInfo.devicePhyId=" << sliceInfo.devicePhyId);
         registerAddrs_.insert(address);
-    } else if (options_.dataOpType &
-               (HYBM_DOP_TYPE_DEVICE_RDMA | HYBM_DOP_TYPE_DEVICE_URMA | HYBM_DOP_TYPE_DEVICE_UBOE)) {
-        address = nullptr;
     }
 
-    remoteSlice = std::make_shared<MemSlice>(sliceCount_++, HYBM_MEM_TYPE_DEVICE, MEM_PT_TYPE_SVM,
+    /* padding memType marker (1 = host) decides the remote slice type: with
+     * shared=false device slices also carry empty ipc names, so the name
+     * alone cannot classify them. */
+    auto remoteMemType = (sliceInfo.padding_[0] == 1) ? HYBM_MEM_TYPE_HOST : HYBM_MEM_TYPE_DEVICE;
+    remoteSlice = std::make_shared<MemSlice>(sliceCount_++, remoteMemType, MEM_PT_TYPE_SVM,
                                              sliceInfo.gvaOffset + reinterpret_cast<uint64_t>(globalVirtualAddress_),
                                              reinterpret_cast<uint64_t>(address), sliceInfo.size);
     rankToRemoteSlices_[sliceInfo.rankId].push_back(remoteSlice);
-    remoteSlices_.emplace(remoteSlice->index_, RegisterSlice{remoteSlice, sliceInfo.name});
-    importedSliceInfo_.emplace(sliceInfo.name, sliceInfo);
+    /* host slices carry no ipc name; use a unique synthetic key to avoid map collisions */
+    std::string sliceKey =
+        (sliceInfo.padding_[0] == 1) ? ("host_gva_" + VaToStr(remoteSlice->gva_)) : std::string(sliceInfo.name);
+    remoteSlices_.emplace(remoteSlice->index_, RegisterSlice{remoteSlice, sliceKey});
+    importedSliceInfo_.emplace(sliceKey, sliceInfo);
+    /* [DRAM] probe: the peer-side reconstruction that smem writes will use.
+     * reconstructed gva = gvaOffset + LOCAL segment GVA base. Cross-check
+     * against the exporter's [DRAM] export(...) line: if the two nodes' GVA
+     * bases differ, gvaOffset must encode that difference. */
+    if (sliceInfo.padding_[0] == 1) {
+        BM_LOG_WARN("[DRAM] import(host) exporterAddr:0x"
+                    << std::hex << sliceInfo.address << " gvaOffset:0x" << sliceInfo.gvaOffset << " localSegGvaBase:0x"
+                    << reinterpret_cast<uint64_t>(globalVirtualAddress_) << " -> reconstructedGva:0x"
+                    << remoteSlice->gva_ << " size:0x" << std::dec << sliceInfo.size << " rank:" << sliceInfo.rankId);
+    }
     uniqueLock.unlock();
-    auto memType = HYBM_MEM_TYPE_DEVICE;
+    auto memType = remoteMemType;
     ret = HybmVaManager::GetInstance().AddVaInfoFromExternal(
         {remoteSlice->gva_, remoteSlice->vAddress_, 0, remoteSlice->size_, memType}, options_.rankId, sliceInfo.rankId);
     BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "ret = " << ret, ret);
@@ -470,6 +592,14 @@ void HybmDevUserLegacySegment::CloseMemory() noexcept
         }
     }
     for (auto &it : registerSlices_) {
+#if defined(ASCEND_NPU)
+        /* drop device mappings created at registration; reused vmm-pool mappings
+         * stay with their allocator */
+        if (hostDvaRegIdx_.erase(it.second.slice->index_) > 0) {
+            DlHalApi::HalHostUnregisterEx(reinterpret_cast<void *>(it.second.slice->vAddress_), logicDeviceId_,
+                                          HOST_MEM_MAP_DEV);
+        }
+#endif
         HybmVaManager::GetInstance().RemoveOneVaInfo(it.second.slice->gva_);
     }
     registerAddrs_.clear();

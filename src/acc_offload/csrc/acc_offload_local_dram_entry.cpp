@@ -55,13 +55,22 @@ int32_t AccOffloadLocalDramEntry::Initialize(const offload_config_t &config)
     options.bmType = HYBM_TYPE_HOST_INITIATE;
     options.memType = HYBM_MEM_TYPE_HOST;
     options.bmDataOpType = HYBM_DOP_TYPE_MTE;
+    /* URMA_POOL mode: switch the dram segment to conn-based (plain host va +
+     * independent HalHostRegister dva) so that the pool can be registered to
+     * smem_trans and written cross-node via DEVICE_URMA; AIV must then use
+     * the dva from offload_get_dva instead of the malloc address. */
+    if (config.flags & OFFLOAD_FLAG_URMA_POOL) {
+        options.bmDataOpType =
+            static_cast<hybm_data_op_type>(static_cast<uint32_t>(options.bmDataOpType) | HYBM_DOP_TYPE_DEVICE_URMA);
+    }
     options.rankCount = 1;
     options.rankId = 0;
     options.devId = config.deviceId;
     options.maxDRAMSize = alignedReserveSize;
     options.hostVASpace = alignedAllocSize;
     options.scene = HYBM_SCENE_DEFAULT;
-    options.flags = HYBM_FLAG_DRAM_MAP_HOST_VA | HYBM_FLAG_UNRESTRICTED_MEM;
+    options.flags = HYBM_FLAG_DRAM_MAP_HOST_VA | HYBM_FLAG_UNRESTRICTED_MEM | (1 << HYBM_PERFORMANCE_MODE_FLAG_INDEX) |
+                    HYBM_BIND_NUMA_AUTO_AFFINITY_FLAG;
     options.dramShmFd = -1;
 
     do {
@@ -159,15 +168,42 @@ void AccOffloadLocalDramEntry::FreeHost(void *ptr)
     memMng_->Release(ptr);
 }
 
+int32_t AccOffloadLocalDramEntry::GetDva(uint64_t hostPtr, uint64_t *dvaPtr)
+{
+    if (!inited_) {
+        OFFLOAD_LOG_ERROR("entry not initialized, get dva failed");
+        return OFFLOAD_ERROR;
+    }
+    if (dvaPtr == nullptr || hostPtr == 0) {
+        OFFLOAD_LOG_ERROR("invalid input, hostPtr: " << hostPtr << ", dvaPtr is null: " << (dvaPtr == nullptr));
+        return OFFLOAD_ERROR;
+    }
+    if (reinterpret_cast<uint64_t>(base_) > hostPtr || hostPtr >= reinterpret_cast<uint64_t>(base_) + size_) {
+        OFFLOAD_LOG_ERROR("hostPtr 0x" << std::hex << hostPtr << " out of pool range [0x"
+                                       << reinterpret_cast<uint64_t>(base_) << ", 0x"
+                                       << reinterpret_cast<uint64_t>(base_) + size_ << ")");
+        return OFFLOAD_ERROR;
+    }
+
+    /* vmm unified pool: dva == hva; urma pool: independent HalHostRegister dva */
+    auto ret = hybm_hva_to_dva(hostPtr, dvaPtr);
+    if (ret != 0) {
+        OFFLOAD_LOG_ERROR("hybm_hva_to_dva failed, hostPtr: 0x" << std::hex << hostPtr << ", ret: " << ret);
+        return OFFLOAD_ERROR;
+    }
+    OFFLOAD_LOG_INFO("get dva: hva=0x" << std::hex << hostPtr << " -> dva=0x" << *dvaPtr);
+    return OFFLOAD_OK;
+}
+
 int32_t AccOffloadLocalDramEntry::SparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr,
-                                             uint8_t devIdx)
+                                             uint8_t devIdx, uint32_t flag)
 {
     OFFLOAD_LOG_DEBUG("sparse copy, src: " << reinterpret_cast<uint64_t>(srcPtrs)
                                            << ", dst: " << reinterpret_cast<uint64_t>(dstPtrs)
                                            << ", len: " << reinterpret_cast<uint64_t>(lenPtrs) << ", size: " << *sizePtr
-                                           << ", devIdx: " << devIdx);
+                                           << ", devIdx: " << devIdx << ", flag: " << flag);
 
-    return AccOffloadLaunchApi::AccOffloadSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, devIdx);
+    return AccOffloadLaunchApi::AccOffloadSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, devIdx, flag);
 }
 
 int32_t AccOffloadLocalDramEntry::GroupPackCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs,

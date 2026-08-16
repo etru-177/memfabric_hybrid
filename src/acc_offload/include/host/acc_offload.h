@@ -23,6 +23,17 @@ typedef enum {
     OFFLOAD_SCENE_SHARED = 1, /* multi-card shared DRAM memory pool */
 } offload_scene_t;
 
+/**
+ * @brief offload_config_t.flags bits.
+ *
+ * OFFLOAD_FLAG_URMA_POOL: allocate the dram pool in URMA-compatible mode
+ * (conn-based segment: plain host va + an independent HalHostRegister device
+ * mapping). Required when the pool is registered to smem_trans with
+ * DEVICE_URMA for cross-node remote writes. In this mode AIV operators must
+ * use the device address from offload_get_dva() instead of the malloc address.
+ */
+#define OFFLOAD_FLAG_URMA_POOL (1U << 0)
+
 typedef struct {
     uint32_t deviceId;     /* Device ID to bind */
     uint64_t reserveSize;  /* Reserved DRAM pool size in bytes, will be aligned up to GB. */
@@ -32,6 +43,7 @@ typedef struct {
     uint32_t worldSize;    /* number of ranks in the group (used in SHARED scene) */
     uint32_t rankId;       /* local rank id, 0 is the allocator (used in SHARED scene) */
     offload_scene_t scene; /* LOCAL: single-card pool; SHARED: multi-card shared pool */
+    uint32_t flags;        /* optional flags, see OFFLOAD_FLAG_xxx; 0 by default */
 } offload_config_t;
 
 /**
@@ -77,6 +89,19 @@ uint64_t offload_malloc(uint64_t size, uint64_t flags);
 void offload_free(uint64_t ptr, uint64_t flags);
 
 /**
+ * @brief Get the device virtual address (DVA) of a pool address from offload malloc.
+ *
+ * For URMA_POOL mode pools the DVA differs from the malloc address (an
+ * independent HalHostRegister device mapping); for vmm unified pools the DVA
+ * equals the malloc address. AIV operators (sparse_copy etc.) must use the DVA.
+ *
+ * @param hostPtr  [in] Address returned by offload malloc (or an interior address of it).
+ * @param dvaPtr   [out] Device virtual address corresponding to the input address.
+ * @return 0 on success, non-zero error code on failure.
+ */
+int32_t offload_get_dva(uint64_t hostPtr, uint64_t *dvaPtr);
+
+/**
  * @brief Batch copy sparse data from host to device or from device to host.
  *
  * Submits a batch of h2d or d2h copy requests. Each request copies
@@ -88,9 +113,11 @@ void offload_free(uint64_t ptr, uint64_t flags);
  * @param lenPtr            [in] Array of byte counts to copy for each pair.
  * @param sizePtr           [in] Pointer to the number of entries in the arrays above.
  * @param deviceId          [in] Device ID to perform the copy on.
+ * @param flag              [in] Kernel selector: 0 = sparse copy kernel (default), 1 = varlen copy kernel.
  * @return 0 on success, non-zero error code on failure.
  */
-int32_t offload_sparse_copy(uint64_t srcPtr, uint64_t dstPtr, uint64_t lenPtr, uint64_t sizePtr, uint16_t deviceId);
+int32_t offload_sparse_copy(uint64_t srcPtr, uint64_t dstPtr, uint64_t lenPtr, uint64_t sizePtr, uint16_t deviceId,
+                            uint32_t flag);
 
 /**
  * @brief Group-pack compacted copy: compact non-zero groupList entries to front.

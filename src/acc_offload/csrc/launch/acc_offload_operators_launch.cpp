@@ -16,12 +16,15 @@
 #include "acc_offload_operators.h"
 
 extern "C" {
-void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint8_t devIdx)
+void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint8_t devIdx,
+                          uint32_t flag)
 {
+    /* flag selects the device kernel: 0 = sparse copy kernel, 1 = varlen copy
+     * kernel; both share the same argument contract and stream semantics. */
 #if defined(ACC_SOC_VERSION_A5)
     constexpr uint32_t blockDim = 64;
 #else
-    constexpr uint32_t blockDim = 48;
+    const uint32_t blockDim = (flag == 0) ? 48 : 32;
 #endif
     c10_npu::OptionalNPUGuard npuGuard;
     npuGuard.set_index(devIdx);
@@ -29,8 +32,12 @@ void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtr
     auto stream = c10_npu::getCurrentNPUStream(devIdx);
     void *npuStream = stream.stream(false);
 
-    auto callback = [srcPtrs, dstPtrs, lenPtrs, sizePtr, npuStream]() -> int {
-        OffloadOpsSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, blockDim, npuStream);
+    auto callback = [srcPtrs, dstPtrs, lenPtrs, sizePtr, blockDim, npuStream, flag]() -> int {
+        if (flag == 0) {
+            OffloadOpsSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, blockDim, npuStream);
+        } else {
+            OffloadOpsVarlenCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, blockDim, npuStream);
+        }
         return 0;
     };
 

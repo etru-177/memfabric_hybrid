@@ -17,6 +17,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/config_ascendc.cmake)
 
 ascendc_library(mf_accoffload_kernel STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/acc_offload_sparse_copy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/acc_offload_varlen_copy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/acc_offload_group_pack_copy.cpp
 )
 

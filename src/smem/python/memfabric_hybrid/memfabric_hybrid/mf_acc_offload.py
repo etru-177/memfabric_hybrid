@@ -13,7 +13,7 @@
 import ctypes
 from _pymf_acc_offload import offload
 
-sparse_copy_impl = offload.sparse_copy
+copy_impl = offload.copy
 group_pack_copy_impl = offload.group_pack_copy
 
 
@@ -34,10 +34,21 @@ def empty(sizes, dtype=None, pin_memory=False):
     return torch.frombuffer(buf, dtype=dtype).reshape(sizes)
 
 
-def sparse_copy(srcPtrs, dstPtrs, lenPtrs, sizePtr, deviceId):
-    return sparse_copy_impl(
-        srcPtrs.data_ptr(), dstPtrs.data_ptr(), lenPtrs.data_ptr(), sizePtr.data_ptr(), deviceId.index
+def sparse_copy_inner(srcPtrs, dstPtrs, lenPtrs, sizePtr, deviceId, flag=0):
+    """Batched variable-length copy. flag=0 (default) runs the sparse_copy
+    kernel, flag=1 runs the varlen_copy kernel.
+    """
+    return copy_impl(
+        srcPtrs.data_ptr(), dstPtrs.data_ptr(), lenPtrs.data_ptr(), sizePtr.data_ptr(), deviceId.index, flag
     )
+
+
+def sparse_copy(srcPtrs, dstPtrs, lenPtrs, sizePtr, deviceId):
+    return sparse_copy_inner(srcPtrs, dstPtrs, lenPtrs, sizePtr, deviceId, flag=0)
+
+
+def varlen_copy(srcPtrs, dstPtrs, lenPtrs, sizePtr, deviceId):
+    return sparse_copy_inner(srcPtrs, dstPtrs, lenPtrs, sizePtr, deviceId, flag=1)
 
 
 def group_pack_copy(srcPtrs, dstPtrs, lenPtrs, numLocalExpertPtr, groupList, packedGroupList, deviceId):

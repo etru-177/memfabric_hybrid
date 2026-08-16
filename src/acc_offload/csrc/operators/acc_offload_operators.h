@@ -22,6 +22,9 @@ extern "C" {
 void OffloadOpsSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint32_t blockDim,
                           void *stream);
 
+void OffloadOpsVarlenCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint32_t blockDim,
+                          void *stream);
+
 void OffloadOpsGroupPackCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *numLocalExpertPtr,
                              int64_t *groupList, int64_t *packedGroupList, void *stream);
 

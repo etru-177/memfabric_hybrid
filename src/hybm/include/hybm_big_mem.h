@@ -186,6 +186,22 @@ int32_t hybm_set_extra_context(hybm_entity_t e, const void *context, uint32_t si
  */
 int32_t hybm_gva_to_va(uint64_t gva, hybm_mem_type vaMemType, uint64_t *va);
 
+/**
+ * @brief Convert a host virtual address (HVA) of local host memory to its device
+ *        virtual address (DVA).
+ *
+ * Only valid for local host memory whose device mapping has been established,
+ * e.g. DRAM allocated with DEVICE_RDMA/DEVICE_URMA data op type (HalHostRegister
+ * is invoked in that case), or a vmm unified mapping (dva == hva). Interior
+ * addresses of the host slice are supported: the returned DVA keeps the same
+ * in-slice offset.
+ *
+ * @param hva              [in] Host virtual address (e.g. returned by offload malloc)
+ * @param dva              [out] Converted device virtual address
+ * @return 0 if successful, error code otherwise
+ */
+int32_t hybm_hva_to_dva(uint64_t hva, uint64_t *dva);
+
 #ifdef __cplusplus
 }
 #endif

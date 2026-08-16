@@ -18,7 +18,7 @@
 namespace ock {
 namespace offload {
 
-using AccOffloadSparseCopyFunc = void (*)(uint64_t *, uint64_t *, uint32_t *, uint32_t *, uint8_t);
+using AccOffloadSparseCopyFunc = void (*)(uint64_t *, uint64_t *, uint32_t *, uint32_t *, uint8_t, uint32_t);
 
 using AccOffloadGroupPackCopyFunc = void (*)(uint64_t *, uint64_t *, uint32_t *, uint32_t *, int64_t *, int64_t *,
                                              uint8_t);
@@ -29,13 +29,13 @@ public:
     static void CleanupLibrary();
 
     static inline int32_t AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs,
-                                               uint32_t *sizePtr, uint8_t devIdx)
+                                               uint32_t *sizePtr, uint8_t devIdx, uint32_t flag = 0)
     {
         if (pAccOffloadSparseCopy == nullptr) {
             return OFFLOAD_UNLOAD;
         }
 
-        pAccOffloadSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, devIdx);
+        pAccOffloadSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, devIdx, flag);
         return OFFLOAD_OK;
     }
 

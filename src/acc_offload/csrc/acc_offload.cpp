@@ -47,15 +47,48 @@ OFFLOAD_API void offload_free(uint64_t ptr, uint64_t flags)
     AccOffloadEntryManager::Instance().FreeHost(reinterpret_cast<void *>(ptr));
 }
 
-OFFLOAD_API int32_t offload_sparse_copy(uint64_t srcPtr, uint64_t dstPtr, uint64_t lenPtr, uint64_t sizePtr,
-                                        uint16_t deviceId)
+OFFLOAD_API int32_t offload_get_dva(uint64_t hostPtr, uint64_t *dvaPtr)
 {
+    if (dvaPtr == nullptr) {
+        OFFLOAD_LOG_ERROR("offload_get_dva: dvaPtr is null");
+        return OFFLOAD_ERROR;
+    }
+    if (hostPtr == 0) {
+        OFFLOAD_LOG_ERROR("offload_get_dva: invalid null hostPtr");
+        return OFFLOAD_ERROR;
+    }
+    return AccOffloadEntryManager::Instance().GetDva(hostPtr, dvaPtr);
+}
+
+OFFLOAD_API int32_t offload_sparse_copy(uint64_t srcPtr, uint64_t dstPtr, uint64_t lenPtr, uint64_t sizePtr,
+                                        uint16_t deviceId, uint32_t flag)
+{
+    /* the internal chain narrows the device index to uint8_t, reject values
+     * that would be silently truncated instead of failing later. */
+    if (deviceId > UINT8_MAX) {
+        OFFLOAD_LOG_ERROR("invalid deviceId " << deviceId << ", exceeds uint8_t range");
+        return OFFLOAD_ERROR;
+    }
+
+    if (flag > 1) {
+        OFFLOAD_LOG_ERROR("invalid flag " << flag << ", expect 0 (sparse copy) or 1 (varlen copy)");
+        return OFFLOAD_ERROR;
+    }
+
+    /* the addresses refer to device memory, validate numerically only */
+    if (srcPtr == 0 || dstPtr == 0 || lenPtr == 0 || sizePtr == 0) {
+        OFFLOAD_LOG_ERROR("invalid null array address, src: " << srcPtr << ", dst: " << dstPtr << ", len: " << lenPtr
+                                                              << ", size: " << sizePtr);
+        return OFFLOAD_ERROR;
+    }
+
     auto srcPtrs = reinterpret_cast<uint64_t *>(srcPtr);
     auto dstPtrs = reinterpret_cast<uint64_t *>(dstPtr);
     auto lenPtrs = reinterpret_cast<uint32_t *>(lenPtr);
     auto sizePtr_ = reinterpret_cast<uint32_t *>(sizePtr);
 
-    return AccOffloadEntryManager::Instance().SparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr_, deviceId);
+    return AccOffloadEntryManager::Instance().SparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr_,
+                                                         static_cast<uint8_t>(deviceId), flag);
 }
 
 OFFLOAD_API int32_t offload_group_pack_copy(uint64_t srcPtr, uint64_t dstPtr, uint64_t lenPtr,

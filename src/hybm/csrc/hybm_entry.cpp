@@ -223,3 +223,33 @@ HYBM_API int32_t hybm_gva_to_va(uint64_t gva, hybm_mem_type vaMemType, uint64_t 
     *va = convertedVa;
     return BM_OK;
 }
+
+HYBM_API int32_t hybm_hva_to_dva(uint64_t hva, uint64_t *dva)
+{
+    if (dva == nullptr) {
+        BM_LOG_ERROR("input dva is null.");
+        return BM_ERROR;
+    }
+
+    if (!HybmHasInited()) {
+        BM_LOG_ERROR("hybm not initialized.");
+        return BM_ERROR;
+    }
+
+    AllocatedGvaInfo info{};
+    bool found = false;
+    std::tie(info, found) = HybmVaManager::GetInstance().FindAllocByVa(hva, HVM_HVA);
+    if (!found) {
+        BM_LOG_ERROR("hva to dva lookup failed for address: 0x" << std::hex << hva);
+        return BM_ERROR;
+    }
+
+    if (info.base.va[HVM_DVA] == 0) {
+        BM_LOG_ERROR("no device mapping for host address: 0x" << std::hex << hva);
+        return BM_ERROR;
+    }
+
+    uint64_t offset = hva - info.base.va[HVM_HVA];
+    *dva = info.base.va[HVM_DVA] + offset;
+    return BM_OK;
+}

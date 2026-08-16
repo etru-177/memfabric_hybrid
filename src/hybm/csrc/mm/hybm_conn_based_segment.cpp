@@ -421,27 +421,32 @@ void *HybmConnBasedSegment::AllocMemory(void *sliceAddr, uint64_t lvOffset, uint
     int mmapFlags = options_.shmFd < 0 ? (MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE) : (MAP_FIXED | MAP_SHARED);
     uint64_t mmapOffset = options_.shmFd < 0 ? 0 : lvOffset;
 
-    // 0. ASCEND_950 only support HalMemAlloc for URMA
-    if (socType_ == AscendSocType::ASCEND_950) {
-        uint64_t allocFlag = MEM_HOST | MEM_TYPE_DDR | MEM_PAGE_NORMAL;
-        void *halAllocPtr = nullptr;
+    // 0. ASCEND_950 only support HalMemAlloc for URMA.
+    // Always MEM_PAGE_NORMAL: normal-page DRAM is plain host memory, so HalHostRegister
+    // in MapSlice creates an INDEPENDENT device mapping (dva != hva) — offload_get_dva
+    // and the trans URMA registration both rely on that address split. MEM_PAGE_HUGE
+    // allocations can come back as unified/SVM memory where HalHostRegister returns
+    // dva == hva, silently collapsing the two address spaces (observed: trans_offload_e2e
+    // decode prints identical HVA/DVA).
+    // TODO
+    // if (socType_ == AscendSocType::ASCEND_950) {
+    //     uint64_t allocFlag = MEM_HOST | MEM_TYPE_DDR | MEM_PAGE_NORMAL;
+    //     void *halAllocPtr = nullptr;
 
-        int ret = DlHalApi::HalMemAlloc(&halAllocPtr, size, allocFlag);
-        if (ret != 0 || halAllocPtr == nullptr) {
-            BM_LOG_ERROR("halMemAlloc failed, ret:" << ret << " ptr:" << halAllocPtr << ". Cannot allocate " << size
-                                                    << " bytes DRAM huge page memory");
-            return MAP_FAILED;
-        } else {
-            allocMethod = MemAllocMethod::HAL_MEM_ALLOC;
-            BM_LOG_INFO("Successfully allocated DRAM hugepage via halMemAlloc for 950. "
-                        "addr:"
-                        << halAllocPtr << " size:" << size);
-            return halAllocPtr;
-        }
-    }
+    //     int ret = DlHalApi::HalMemAlloc(&halAllocPtr, size, allocFlag);
+    //     if (ret != 0 || halAllocPtr == nullptr) {
+    //         BM_LOG_ERROR("halMemAlloc failed, ret:" << ret << " ptr:" << halAllocPtr << ". Cannot allocate " << size
+    //                                                 << " bytes DRAM memory");
+    //         return MAP_FAILED;
+    //     }
+    //     allocMethod = MemAllocMethod::HAL_MEM_ALLOC;
+    //     BM_LOG_INFO("Allocated DRAM normal page via halMemAlloc for 950. addr:" << halAllocPtr
+    //                 << " size:" << size);
+    //     return halAllocPtr;
+    // }
 
     // 1. Try to alloc DRAM with hugepage via mmap
-    mapped = mmap(sliceAddr, size, prot, mmapFlags | MAP_HUGETLB, mmapFd, mmapOffset);
+    mapped = mmap(sliceAddr, size, prot, mmapFlags | MAP_HUGETLB | (30U << 26), mmapFd, mmapOffset);
     if (mapped == sliceAddr) {
         BM_LOG_INFO("Successfully allocated " << size << " bytes DRAM hugepage via mmap. addr:" << mapped);
         allocMethod = MemAllocMethod::MMAP;

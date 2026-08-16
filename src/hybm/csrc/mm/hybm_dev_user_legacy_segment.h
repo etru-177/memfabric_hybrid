@@ -94,6 +94,7 @@ private:
     Result ImportDeviceInfo(const std::string &info) noexcept;
     Result ImportSliceInfo(const std::string &info, MemSlicePtr &remoteSlice) noexcept;
     void RollbackIpcMemory(void *addresses[], uint32_t count) noexcept;
+    Result RegisterHostMemory(const void *addr, uint64_t size, MemSlicePtr &slice) noexcept;
     void RemoveSliceInfo(const uint32_t rankId) noexcept;
 
 private:
@@ -105,6 +106,7 @@ private:
     std::map<uint32_t, HbmExportDeviceInfo> importedDeviceInfo_;
     std::map<std::string, UserHbmExportSliceInfo> importedSliceInfo_;
     std::set<void *> registerAddrs_{};
+    std::set<uint32_t> hostDvaRegIdx_{}; /* host slices whose device mapping was created here */
     std::vector<std::string> memNames_{};
 };
 } // namespace mf
