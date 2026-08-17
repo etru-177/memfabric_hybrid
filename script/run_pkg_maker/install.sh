@@ -263,24 +263,28 @@ function check_path()
 
 function get_ascend_version() {
     local soc_name=""
-    # 优先用 npu-smi 取 SoC 名（容器/宿主 lspci 不可靠时仍有效）
+    # Prefer npu-smi to get the SoC name (still valid when lspci is unreliable in container/host)
     if command -v npu-smi &>/dev/null; then
-        soc_name=$(npu-smi info 2>/dev/null | grep -oE "Ascend9[0-9]+[A-Za-z]*" | head -n1)
+        # some npu-smi versions report the chip as bare "910B3" without the "Ascend" prefix
+        soc_name=$(npu-smi info 2>/dev/null | grep -oE "Ascend(9|3)[0-9]+[A-Za-z0-9]*" | head -n1)
+        if [ -z "${soc_name}" ]; then
+            soc_name=$(npu-smi info 2>/dev/null | grep -oE "(9|3)[0-9]{2}[A-Za-z0-9]*" | grep -E "^(910|950|310)" | head -n1)
+        fi
     fi
     if [ -n "${soc_name}" ]; then
         case "${soc_name}" in
-             *Ascend950*|*Ascend910_95*)
+             *950*|*Ascend910_95*)
                  ascend_version="A5" ;;
-             *Ascend910B*)
+             *910B*)
                  ascend_version="A2" ;;
-             *Ascend910*)
+             *910*)
                  ascend_version="A3" ;;
              *)
                 ascend_version="none" ;;
         esac
         return
     fi
-    # lspci 兜底（PCI 设备 ID：d802=A2, d803=A3, d806=A5）
+    # lspci fallback (PCI device IDs: d802=A2, d803=A3, d806=A5)
     if [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d806") -gt 0 ]; then
         ascend_version="A5"
     elif [ $(lspci 2>/dev/null | grep -ci "Processing.*Huawei.*d803") -gt 0 ]; then
