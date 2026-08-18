@@ -52,7 +52,7 @@ Result HybmDevUserLegacySegment::ReserveMemorySpace(void **address) noexcept
 Result HybmDevUserLegacySegment::UnReserveMemorySpace() noexcept
 {
     BM_LOG_INFO("un-reserve memory space.");
-    if (!memNames_.empty()) {
+    if (!memNames_.empty() && options_.shared) {
         for (auto &name : memNames_) {
             DlAclApi::RtIpcDestroyMemoryName(name.c_str());
         }
@@ -86,14 +86,19 @@ Result HybmDevUserLegacySegment::RegisterMemory(const void *addr, uint64_t size,
     }
 
     char name[DEVICE_SHM_NAME_SIZE + 1U]{};
-    auto ret = DlAclApi::RtIpcSetMemoryName(addr, size, name, sizeof(name));
-    if (ret != 0) {
-        BM_LOG_ERROR("RtIpcSetMemoryName failed, ret: " << ret << " addr: 0x" << std::hex << addr << " size: " << size);
-        return BM_DL_FUNCTION_FAILED;
+    int32_t ret;
+    if (options_.shared) {
+        ret = DlAclApi::RtIpcSetMemoryName(addr, size, name, sizeof(name));
+        if (ret != 0) {
+            BM_LOG_ERROR("RtIpcSetMemoryName failed, ret: " << ret << " addr: 0x" << std::hex << addr
+                                                            << " size: " << size);
+            return BM_DL_FUNCTION_FAILED;
+        }
     }
     std::unique_lock<std::mutex> uniqueLock{mutex_};
     for (auto &remoteDev : importedDeviceInfo_) {
-        if (!CanSdmaReaches(remoteDev.second.superPodId, remoteDev.second.serverId, remoteDev.second.devicePhyId)) {
+        if (!options_.shared ||
+            !CanSdmaReaches(remoteDev.second.superPodId, remoteDev.second.serverId, remoteDev.second.devicePhyId)) {
             continue;
         }
         ret = DlAclApi::RtSetIpcMemorySuperPodPid(name, remoteDev.second.sdid, (int *)&remoteDev.second.pid, 1);
@@ -114,7 +119,9 @@ Result HybmDevUserLegacySegment::RegisterMemory(const void *addr, uint64_t size,
                                                  options_.rankId, true);
     if (ret != 0) {
         BM_LOG_ERROR("AddVaInfo failed, size: " << size << " ret: " << ret);
-        DlAclApi::RtIpcDestroyMemoryName(name);
+        if (options_.shared) {
+            DlAclApi::RtIpcDestroyMemoryName(name);
+        }
         slice = nullptr;
         return ret;
     }
@@ -139,10 +146,12 @@ Result HybmDevUserLegacySegment::ReleaseSliceMemory(const MemSlicePtr &slice) no
         return BM_INVALID_PARAM;
     }
 
-    auto ret = DlAclApi::RtIpcDestroyMemoryName(pos->second.name.c_str());
-    if (ret != 0) {
-        BM_LOG_ERROR("destroy memory name failed: " << ret);
-        return BM_DL_FUNCTION_FAILED;
+    if (options_.shared) {
+        auto ret = DlAclApi::RtIpcDestroyMemoryName(pos->second.name.c_str());
+        if (ret != 0) {
+            BM_LOG_ERROR("destroy memory name failed: " << ret);
+            return BM_DL_FUNCTION_FAILED;
+        }
     }
 
     registerSlices_.erase(pos);
@@ -202,10 +211,10 @@ Result HybmDevUserLegacySegment::GetExportSliceSize(size_t &size) noexcept
     return BM_OK;
 }
 
-void HybmDevUserLegacySegment::RollbackIpcMemory(void *addresses[], uint32_t count)
+void HybmDevUserLegacySegment::RollbackIpcMemory(void *addresses[], uint32_t count) noexcept
 {
     for (uint32_t j = 0; j < count; j++) {
-        if (addresses[j] != nullptr) {
+        if (options_.shared && addresses[j] != nullptr) {
             DlAclApi::RtIpcCloseMemory(addresses[j]);
         }
     }
@@ -285,8 +294,7 @@ void HybmDevUserLegacySegment::RemoveSliceInfo(const uint32_t rankId) noexcept
             continue;
         }
         auto &sliceInfo = sIt->second;
-        if ((options_.dataOpType & HYBM_DOP_TYPE_SDMA) &&
-            CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
+        if (options_.shared && CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
             void *address = reinterpret_cast<void *>(static_cast<ptrdiff_t>(remoteSlice->vAddress_ << 16 >> 16));
             BM_LOG_INFO("RtIpcCloseMemory start address="
                         << address
@@ -374,15 +382,18 @@ Result HybmDevUserLegacySegment::ImportDeviceInfo(const std::string &info) noexc
         BM_LOG_DEBUG("enable peer access for : " << deviceInfo.devicePhyId);
     }
     std::unique_lock<std::mutex> uniqueLock{mutex_};
-    for (auto &it : registerSlices_) {
-        ret = DlAclApi::RtSetIpcMemorySuperPodPid(it.second.name.c_str(), deviceInfo.sdid, (int *)&deviceInfo.pid, 1);
-        if (ret != 0) {
-            BM_LOG_ERROR("RtSetIpcMemorySuperPodPid failed: " << ret);
-            return BM_DL_FUNCTION_FAILED;
+    if (options_.shared) {
+        for (auto &it : registerSlices_) {
+            ret =
+                DlAclApi::RtSetIpcMemorySuperPodPid(it.second.name.c_str(), deviceInfo.sdid, (int *)&deviceInfo.pid, 1);
+            if (ret != 0) {
+                BM_LOG_ERROR("RtSetIpcMemorySuperPodPid failed: " << ret);
+                return BM_DL_FUNCTION_FAILED;
+            }
+            BM_LOG_DEBUG("set whitelist for shm(" << it.second.name << ") sdid=" << deviceInfo.sdid
+                                                  << " pid=" << deviceInfo.pid << " rank=" << deviceInfo.rankId
+                                                  << " devId=" << deviceInfo.devicePhyId);
         }
-        BM_LOG_DEBUG("set whitelist for shm(" << it.second.name << ") sdid=" << deviceInfo.sdid
-                                              << " pid=" << deviceInfo.pid << " rank=" << deviceInfo.rankId
-                                              << " devId=" << deviceInfo.devicePhyId);
     }
 
     importedDeviceInfo_.emplace(deviceInfo.rankId, deviceInfo);
@@ -408,8 +419,7 @@ Result HybmDevUserLegacySegment::ImportSliceInfo(const std::string &info, MemSli
 
     void *address = nullptr;
     std::unique_lock<std::mutex> uniqueLock{mutex_};
-    if ((options_.dataOpType & HYBM_DOP_TYPE_SDMA) &&
-        CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
+    if (options_.shared && CanSdmaReaches(sliceInfo.superPodId, sliceInfo.serverId, sliceInfo.devicePhyId)) {
         if (sliceInfo.devicePhyId != static_cast<uint32_t>(devicePhyId_) &&
             !enablePeerDevices_.test(sliceInfo.devicePhyId)) {
             auto ret = EnableRemotePeerAccess(sliceInfo.devicePhyId);
@@ -452,9 +462,11 @@ Result HybmDevUserLegacySegment::ImportSliceInfo(const std::string &info, MemSli
 
 void HybmDevUserLegacySegment::CloseMemory() noexcept
 {
-    for (auto &addr : registerAddrs_) {
-        if (DlAclApi::RtIpcCloseMemory(addr) != 0) {
-            BM_LOG_WARN("Unable to close memory. This may affect future memory registration.");
+    if (options_.shared) {
+        for (auto &addr : registerAddrs_) {
+            if (DlAclApi::RtIpcCloseMemory(addr) != 0) {
+                BM_LOG_WARN("Unable to close memory. This may affect future memory registration.");
+            }
         }
     }
     for (auto &it : registerSlices_) {

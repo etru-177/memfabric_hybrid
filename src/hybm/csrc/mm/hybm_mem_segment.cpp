@@ -175,6 +175,11 @@ Result MemSegment::InitDeviceInfo(int devId)
     }
 
     if (deviceInfoReady_) {
+        auto ret = DlAclApi::AclrtSetDevice(devId, true);
+        if (ret != 0) {
+            BM_LOG_ERROR("set device to:" << devId << "failed: " << ret);
+            return BM_DL_FUNCTION_FAILED;
+        }
         return (deviceId_ == devId ? BM_OK : BM_INVALID_PARAM);
     }
 

@@ -93,7 +93,7 @@ public:
 private:
     Result ImportDeviceInfo(const std::string &info) noexcept;
     Result ImportSliceInfo(const std::string &info, MemSlicePtr &remoteSlice) noexcept;
-    static void RollbackIpcMemory(void *addresses[], uint32_t count);
+    void RollbackIpcMemory(void *addresses[], uint32_t count) noexcept;
     void RemoveSliceInfo(const uint32_t rankId) noexcept;
 
 private:
