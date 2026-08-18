@@ -10,6 +10,7 @@
 |-----------|-------|------|
 | `CUDA_HOME` | 无（必填） | GPU环境下CUDA安装路径，用于加载CUDA动态库。NPU环境无需设置。 |
 | `ASCEND_HOME_PATH` | 无（必填） | NPU环境下Ascend安装路径，用于加载CANN动态库。GPU环境无需设置。 |
+| `MF_HYBM_USE_HCOMM_AICPU` | false | 设为`true`时绕过SoC判断，在任意SoC自动安装HCOMM AICPU kernel。 |
 | `ASCEND_RT_VISIBLE_DEVICES` | 无 | 设备可见性控制，用于将物理设备ID映射为逻辑设备ID。格式如`0,1,2,3`。 |
 | `HCOM_MAX_SLICE_SIZE` | NPU: 1MB<br>其他: 1GB | HCOM传输最大切片大小（字节），控制单次传输数据分片上限。适用于HOST_RDMA/HOST_TCP/HOST_URMA传输模式。 |
 | `HCOM_RECV_DATA_SIZE` | NPU: 1MB+1KB<br>其他: 1MB+1024 | HCOM接收数据缓冲区大小（字节）。建议设置为`HCOM_MAX_SLICE_SIZE + 1024`。 |
