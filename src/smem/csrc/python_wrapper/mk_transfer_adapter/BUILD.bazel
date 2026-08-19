@@ -78,6 +78,8 @@ cc_library (
         "@version_info//:version_info",
         "//src:util_headers",
         "//src/acc_links/csrc:acc_tcp_net_static",
+        "//src/smem/csrc:smem_src_headers",
+        "//src/util/csrc/ptracer:ptracer_src_headers",
         "//src:smem_headers",
         ":py_transfer_headers",
     ],

@@ -21,6 +21,7 @@
 #include <pybind11/stl.h>
 #include "mf_env_define.h"
 #include "transfer_util.h"
+#include "smem_ptracer.h"
 #include "adapter_logger.h"
 
 using namespace ock::adapter;
@@ -179,8 +180,10 @@ int TransferAdapterPy::TransferSyncWrite(const char *destUniqueId, uintptr_t buf
 
     const void *srcAddress = reinterpret_cast<const void *>(buffer);
     void *destAddress = reinterpret_cast<void *>(peer_buffer_address);
-
+    TP_TRACE_BEGIN(TP_TRANS_WRITE);
     int ret = smem_trans_write(handle, srcAddress, destUniqueId, destAddress, length, flags);
+    TP_TRACE_END(TP_TRANS_WRITE, ret);
+    TP_TRACE_RECORD(TP_TRANS_WRITE_SIZE, length * 1000ULL, 0);
     if (ret != 0) {
         ADAPTER_LOG_ERROR("SMEM API smem_trans_write error, ret=" << ret << " dest=" << destUniqueId);
     }
@@ -204,15 +207,18 @@ int TransferAdapterPy::BatchTransferSyncWrite(const char *destUniqueId, std::vec
     std::vector<const void *> srcAddresses(batchSize);
     std::vector<void *> destAddresses(batchSize);
     std::vector<size_t> dataSizes(batchSize);
-
+    size_t totalSize = 0;
     for (size_t i = 0; i < batchSize; ++i) {
         srcAddresses[i] = reinterpret_cast<const void *>(buffers[i]);
         destAddresses[i] = reinterpret_cast<void *>(peer_buffer_addresses[i]);
         dataSizes[i] = lengths[i];
+        totalSize += lengths[i];
     }
-
+    TP_TRACE_BEGIN(TP_TRANS_BATCH_WRITE);
     int ret = smem_trans_batch_write(handle, srcAddresses.data(), destUniqueId, destAddresses.data(), dataSizes.data(),
                                      static_cast<uint32_t>(batchSize), flags);
+    TP_TRACE_END(TP_TRANS_BATCH_WRITE, ret);
+    TP_TRACE_RECORD(TP_TRANS_BATCH_WRITE_SIZE, totalSize * 1000ULL, 0);
     if (ret != 0) {
         ADAPTER_LOG_ERROR("SMEM API smem_trans_batch_write error, ret=" << ret << " dest=" << destUniqueId);
     }
@@ -227,8 +233,10 @@ int TransferAdapterPy::TransferSyncRead(const char *destUniqueId, uintptr_t buff
 
     void *srcAddress = reinterpret_cast<void *>(buffer);
     const void *destAddress = reinterpret_cast<const void *>(peer_buffer_address);
-
+    TP_TRACE_BEGIN(TP_TRANS_READ);
     int ret = smem_trans_read(handle, srcAddress, destUniqueId, destAddress, length, flags);
+    TP_TRACE_END(TP_TRANS_READ, ret);
+    TP_TRACE_RECORD(TP_TRANS_READ_SIZE, length * 1000ULL, 0);
     if (ret != 0) {
         ADAPTER_LOG_ERROR("SMEM API smem_trans_read error, ret=" << ret << " dest=" << destUniqueId);
     }
@@ -288,15 +296,18 @@ int TransferAdapterPy::BatchTransferSyncRead(const char *destUniqueId, std::vect
     std::vector<void *> srcAddresses(batchSize);
     std::vector<const void *> destAddresses(batchSize);
     std::vector<size_t> dataSizes(batchSize);
-
+    size_t totalSize = 0;
     for (size_t i = 0; i < batchSize; ++i) {
         srcAddresses[i] = reinterpret_cast<void *>(buffers[i]);
         destAddresses[i] = reinterpret_cast<const void *>(peer_buffer_addresses[i]);
         dataSizes[i] = lengths[i];
+        totalSize += lengths[i];
     }
-
+    TP_TRACE_BEGIN(TP_TRANS_BATCH_READ);
     int ret = smem_trans_batch_read(handle, srcAddresses.data(), destUniqueId, destAddresses.data(), dataSizes.data(),
                                     static_cast<uint32_t>(batchSize), flags);
+    TP_TRACE_END(TP_TRANS_BATCH_READ, ret);
+    TP_TRACE_RECORD(TP_TRANS_BATCH_READ_SIZE, totalSize * 1000ULL, 0);
     if (ret != 0) {
         ADAPTER_LOG_ERROR("SMEM API smem_trans_batch_read error, ret=" << ret << " dest=" << destUniqueId);
     }
@@ -419,7 +430,9 @@ int TransferAdapterPy::BatchTransferWriteWithQuant(const char *destUniqueId, std
                                            reinterpret_cast<void *>(stream),
                                            input_type,
                                            flags};
+    TP_TRACE_BEGIN(TP_TRANS_BATCH_WRITE_QUANT);
     int ret = smem_trans_batch_quant_write(handle, &param);
+    TP_TRACE_END(TP_TRANS_BATCH_WRITE_QUANT, ret);
     if (ret != 0) {
         ADAPTER_LOG_ERROR("SMEM API smem_trans_batch_quant_write error, ret=" << ret << " dest=" << destUniqueId);
     }
