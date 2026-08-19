@@ -383,7 +383,7 @@ TEST_F(SmemBmTest, smem_bm_config_init_success)
     EXPECT_EQ(ret, ock::smem::SM_OK);
     EXPECT_EQ(config.initTimeout, ock::smem::SMEM_DEFAUT_WAIT_TIME);
     EXPECT_EQ(config.createTimeout, ock::smem::SMEM_DEFAUT_WAIT_TIME);
-    EXPECT_EQ(config.controlOperationTimeout, ock::smem::SMEM_DEFAUT_WAIT_TIME);
+    EXPECT_EQ(config.controlOperationTimeout, ock::smem::MF_GROUP_JOIN_DEFAULT_TIMEOUT);
     EXPECT_TRUE(config.startConfigStoreServer);
     EXPECT_FALSE(config.startConfigStoreOnly);
     EXPECT_FALSE(config.dynamicWorldSize);

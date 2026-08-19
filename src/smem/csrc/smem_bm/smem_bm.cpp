@@ -18,6 +18,8 @@
 #include "smem_bm_entry_manager.h"
 #include "smem_hybm_helper.h"
 #include "mf_rwlock.h"
+#include "mf_env_define.h"
+#include "mf_env_util.h"
 #include "mf_fault_injection_point_registry.h"
 #include "smem_bm.h"
 
@@ -31,7 +33,8 @@ SMEM_API int32_t smem_bm_config_init(smem_bm_config_t *config)
     SM_VALIDATE_RETURN(config != nullptr, "Invalid config", SM_INVALID_PARAM);
     config->initTimeout = SMEM_DEFAUT_WAIT_TIME;
     config->createTimeout = SMEM_DEFAUT_WAIT_TIME;
-    config->controlOperationTimeout = SMEM_DEFAUT_WAIT_TIME;
+    config->controlOperationTimeout =
+        MfEnvUtil::GetOptionalUintOrDefault(env::MF_GROUP_JOIN_MAX_TIMEOUT, MF_GROUP_JOIN_DEFAULT_TIMEOUT);
     config->startConfigStoreServer = true;
     config->startConfigStoreOnly = false;
     config->dynamicWorldSize = false;

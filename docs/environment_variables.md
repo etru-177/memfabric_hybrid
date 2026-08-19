@@ -26,6 +26,7 @@
 | `MF_TRANSPORT_MANAGER` | 无 | 传输管理器选择，用于调试指定传输层实现。 |
 | `MF_GROUP_JOIN_MAX_TIMEOUT` | 600 | 集群加入最大超时时间（秒），适用于BM和Transfer模块的Join操作。 |
 | `MF_GROUP_RETRY_TIME` | 5 | 集群更新（GroupUpdate）重试次数，适用于BM和Transfer模块。 |
+| `MF_QP_READY_CHECK_TIMEOUT_BASE` | 100 | Device RDMA QP（Queue Pair）就绪检查超时基础值（秒）。在Device RDMA传输模式下，等待所有rank的QP就绪的总超时基数。|
 | `MF_ACC_CHECK_PERIOD_HOURS` | 168 | 控制路径SSL证书定期检查周期（小时），有效范围24-720。 |
 | `MF_ACC_CERT_CHECK_AHEAD_DAYS` | 30 | 证书提前检查天数，在证书过期前多少天开始告警，有效范围7-180。 |
 | `MF_HCOM_CQ_DEPTH` | 无 | HCOM完成队列深度，设置后覆盖默认值。 |

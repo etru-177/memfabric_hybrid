@@ -12,6 +12,7 @@
 #include <chrono>
 #include <sstream>
 #include "hybm_logger.h"
+#include "hybm_ptracer.h"
 #include "dl_hccp_api.h"
 #include "dl_acl_api.h"
 #include "joinable_ranks_qp_manager.h"
@@ -153,7 +154,9 @@ void JoinableRanksQpManager::PutQpHandle(UserQpInfo *qp) const noexcept
 {
     uint32_t val = qp->ref.fetch_sub(1U);
     if (val == 1U) { // 返回减之前的值
+        TP_TRACE_BEGIN(TP_HYBM_RA_QP_DESTROY);
         auto ret = DlHccpApi::RaQpDestroy(qp->qpHandle);
+        TP_TRACE_END(TP_HYBM_RA_QP_DESTROY, ret);
         if (ret != 0) {
             BM_LOG_WARN("unable to close qp from " << rankId_ << " , ret: " << ret);
         }
@@ -355,7 +358,9 @@ int JoinableRanksQpManager::WaitSocketConnections(const std::set<uint32_t> &newR
     uint32_t batchCnt = 16U;
     do {
         uint32_t getSize = socketInfos.size() < batchCnt ? socketInfos.size() : batchCnt;
+        TP_TRACE_BEGIN(TP_HYBM_RA_GET_SOCKETS);
         auto ret = DlHccpApi::RaGetSockets(socketRole, socketInfos.data(), getSize, cnt);
+        TP_TRACE_END(TP_HYBM_RA_GET_SOCKETS, ret);
         if (ret != 0) {
             BM_LOG_ERROR("socketRole(" << socketRole << ") side get sockets failed: " << ret);
             return 1;
@@ -433,13 +438,17 @@ void JoinableRanksQpManager::MakeQpConnections(const std::set<uint32_t> &newRank
             void *qpHandle = nullptr;
             auto info = new (std::nothrow) UserQpInfo;
             BM_ASSERT_RET_VOID(info != nullptr, "info is nullptr");
+            TP_TRACE_BEGIN(TP_HYBM_RA_QP_CREATE);
             auto ret = DlHccpApi::RaQpCreate(rdmaHandle_, 0, 4, qpHandle);
+            TP_TRACE_END(TP_HYBM_RA_QP_CREATE, ret);
             if (ret != 0) {
                 BM_LOG_ERROR("create QP to " << rankId << " failed: " << ret);
                 delete info;
                 continue;
             }
+            TP_TRACE_BEGIN(TP_HYBM_RA_SET_QP_ATTR_QOS);
             ret = DlHccpApi::RaSetQpAttrQos(qpHandle, &qosAttr_);
+            TP_TRACE_END(TP_HYBM_RA_SET_QP_ATTR_QOS, ret);
             if (ret != 0) {
                 BM_LOG_WARN("set qos failed, tc:" << static_cast<uint32_t>(qosAttr_.tc)
                                                   << " sl:" << static_cast<uint32_t>(qosAttr_.sl) << " ret:" << ret);
@@ -455,7 +464,9 @@ void JoinableRanksQpManager::MakeQpConnections(const std::set<uint32_t> &newRank
         }
 
         if (!connections_[rankId].qpConnectCalled) {
+            TP_TRACE_BEGIN(TP_HYBM_RA_QP_CONNECT_ASYNC);
             auto ret = DlHccpApi::RaQpConnectAsync(connections_[rankId].qpHandle, connections_[rankId].socketFd);
+            TP_TRACE_END(TP_HYBM_RA_QP_CONNECT_ASYNC, ret);
             if (ret != 0) {
                 BM_LOG_ERROR("create QP from " << rankId_ << " to " << rankId << " failed: " << ret);
                 continue;
@@ -483,7 +494,9 @@ void JoinableRanksQpManager::WaitQpConnections(const std::set<uint32_t> &newRank
             continue;
         }
 
+        TP_TRACE_BEGIN(TP_HYBM_RA_GET_QP_STATUS);
         auto ret = DlHccpApi::RaGetQpStatus(connections_[rankId].qpHandle, connections_[rankId].qpStatus);
+        TP_TRACE_END(TP_HYBM_RA_GET_QP_STATUS, ret);
         if (ret != 0) {
             BM_LOG_ERROR("get QP status to " << rankId << " failed: " << ret);
             continue;
@@ -542,7 +555,9 @@ int JoinableRanksQpManager::GenerateWhiteList(const std::set<uint32_t> &newClien
         auto batchStart = whitelist.begin() + i;
         auto batchEnd = batchStart + currentBatchSize;
         std::vector<HccpSocketWhiteListInfo> currentBatch(batchStart, batchEnd);
+        TP_TRACE_BEGIN(TP_HYBM_RA_SOCKET_WHITE_LIST_ADD);
         auto ret = DlHccpApi::RaSocketWhiteListAdd(serverSocketHandle_, currentBatch.data(), currentBatch.size());
+        TP_TRACE_END(TP_HYBM_RA_SOCKET_WHITE_LIST_ADD, ret);
         if (ret != 0) {
             BM_LOG_ERROR("RaSocketWhiteListAdd() with size=" << currentBatch.size() << " failed: " << ret);
             return BM_ERROR;
@@ -599,7 +614,9 @@ int JoinableRanksQpManager::CreateConnectionToServers(const std::set<uint32_t> &
         auto batchEnd = batchStart + currentBatchSize;
         std::vector<HccpSocketConnectInfo> currentBatch(batchStart, batchEnd);
 
+        TP_TRACE_BEGIN(TP_HYBM_RA_SOCKET_BATCH_CONNECT);
         auto ret = DlHccpApi::RaSocketBatchConnect(currentBatch.data(), currentBatch.size());
+        TP_TRACE_END(TP_HYBM_RA_SOCKET_BATCH_CONNECT, ret);
         if (ret != 0) {
             BM_LOG_ERROR("connect to all servers failed: " << ret << ", servers count = " << connectInfos.size());
             return BM_ERROR;
@@ -635,7 +652,9 @@ void JoinableRanksQpManager::RemoveRanksProcess(const std::set<uint32_t> &ranks)
         if (closeInfo.handle == nullptr) {
             continue;
         }
+        TP_TRACE_BEGIN(TP_HYBM_RA_SOCKET_BATCH_CLOSE);
         auto ret = DlHccpApi::RaSocketBatchClose(&closeInfo, 1U);
+        TP_TRACE_END(TP_HYBM_RA_SOCKET_BATCH_CLOSE, ret);
         if (ret != 0) {
             BM_LOG_WARN("unable to close socket from " << rankId_ << " to " << it->first << " : " << ret);
         } else {

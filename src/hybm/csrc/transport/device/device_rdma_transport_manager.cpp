@@ -29,12 +29,15 @@
 #include "joinable_ranks_qp_manager.h"
 #include "hybm_gva.h"
 #include "hybm_va_manager.h"
+#include "mf_env_define.h"
+#include "mf_env_util.h"
 
 namespace {
-constexpr auto QP_READY_CHECK_TIMEOUT_BASE = std::chrono::seconds(60);
+const auto QP_READY_CHECK_TIMEOUT_BASE_SECONDS =
+    ock::mf::MfEnvUtil::GetOptionalUintOrDefault(ock::mf::env::MF_QP_READY_CHECK_TIMEOUT_BASE, 100);
+const auto QP_READY_CHECK_TIMEOUT_BASE = std::chrono::seconds(QP_READY_CHECK_TIMEOUT_BASE_SECONDS);
 constexpr auto QP_READY_CHECK_TIMEOUT_PER_RANK = std::chrono::milliseconds(100);
 constexpr auto QP_READY_CHECK_INTERVAL = std::chrono::milliseconds(5);
-constexpr uint64_t QP_READY_LOG_INTERVAL_TRIES = 200; // ≈ 1s per log (200 * 5ms)
 } // namespace
 
 namespace ock {
