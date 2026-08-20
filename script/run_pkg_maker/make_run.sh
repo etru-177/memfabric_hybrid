@@ -14,11 +14,20 @@ XPU_TYPE=${2:-NPU}
 BUILD_PYTHON=${3:-ON}
 BUILD_HCOM=${4:-OFF}
 BUILD_ETCD_BACKEND=${5:-OFF}
+BUILD_ACC_OFFLOAD=${6:-ON}
+if [ "${XPU_TYPE}" == "NONE" ]; then
+    BUILD_ACC_OFFLOAD="OFF"
+fi
+if [ "${BUILD_ACC_OFFLOAD}" != "ON" ] && [ "${BUILD_ACC_OFFLOAD}" != "OFF" ]; then
+    echo "Invalid BUILD_ACC_OFFLOAD value: ${BUILD_ACC_OFFLOAD}" >&2
+    exit 1
+fi
 echo "BUILD_TEST is ${BUILD_TEST}"
 echo "XPU_TYPE is ${XPU_TYPE}"
 echo "BUILD_PYTHON is ${BUILD_PYTHON}"
 echo "BUILD_HCOM is ${BUILD_HCOM}"
 echo "BUILD_ETCD_BACKEND is ${BUILD_ETCD_BACKEND}"
+echo "BUILD_ACC_OFFLOAD is ${BUILD_ACC_OFFLOAD}"
 set -e
 readonly BASH_PATH=$(dirname $(readlink -f "$0"))
 CURRENT_DIR=$(pwd)
@@ -76,35 +85,31 @@ cp "${OUTPUT_DIR}"/smem/lib64/* ${PKG_DIR}/"${ARCH_OS}"/lib64
 cp -r "${OUTPUT_DIR}"/hybm/include/* ${PKG_DIR}/include/hybm/
 cp "${OUTPUT_DIR}"/hybm/lib64/libmf_hybm_core.so ${PKG_DIR}/"${ARCH_OS}"/lib64/
 cp -r "${PROJECT_DIR}"/src/hybm/csrc/copy_extend ${PKG_DIR}
-# accoffload extend source (AscendC kernel + torch_npu adapter), compiled at install time
-mkdir -p ${PKG_DIR}/accoffload_operators
-cp -r "${PROJECT_DIR}"/src/acc_offload/csrc/operators/. ${PKG_DIR}/accoffload_operators/
-cp "${PROJECT_DIR}"/src/acc_offload/csrc/launch/acc_offload_operators_launch.cpp ${PKG_DIR}/accoffload_operators/
+if [ "${BUILD_ACC_OFFLOAD}" == "ON" ]; then
+    # Accoffload extend source (AscendC kernel + torch_npu adapter), compiled at install time.
+    mkdir -p ${PKG_DIR}/accoffload_operators
+    cp -r "${PROJECT_DIR}"/src/acc_offload/csrc/operators/. ${PKG_DIR}/accoffload_operators/
+    cp "${PROJECT_DIR}"/src/acc_offload/csrc/launch/acc_offload_operators_launch.cpp \
+       ${PKG_DIR}/accoffload_operators/
 
-# Shared AICPU source dependencies used by the HYBM kernel build and launcher compile.
-mkdir -p ${PKG_DIR}/accoffload_operators/include
-cp "${PROJECT_DIR}"/src/hybm/csrc/common/hybm_batch_copy_route.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/hybm/csrc/common/hybm_define.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/hybm/include/hybm_def.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/hybm/csrc/under_api/dl_hcomm_api.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/hybm/csrc/common/hybm_types.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/hybm/ops/hybm_kernel/hybm_batch_transfer.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/hybm/ops/hybm_kernel/hybm_kernel_log.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/acc_offload/csrc/common/acc_offload_define.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/acc_offload/csrc/common/acc_offload_logger.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/util/csrc/mf_out_logger.h \
-   ${PKG_DIR}/accoffload_operators/include/
-cp "${PROJECT_DIR}"/src/util/csrc/mf_spinlock.h \
-   ${PKG_DIR}/accoffload_operators/include/
+    # Shared AICPU source dependencies used by the HYBM kernel build and launcher compile.
+    mkdir -p ${PKG_DIR}/accoffload_operators/include
+    cp "${PROJECT_DIR}"/src/hybm/csrc/common/hybm_batch_copy_route.h \
+       ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/hybm/csrc/common/hybm_define.h ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/hybm/include/hybm_def.h ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/hybm/csrc/under_api/dl_hcomm_api.h ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/hybm/csrc/common/hybm_types.h ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/hybm/ops/hybm_kernel/hybm_batch_transfer.h \
+       ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/hybm/ops/hybm_kernel/hybm_kernel_log.h ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/acc_offload/csrc/common/acc_offload_define.h \
+       ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/acc_offload/csrc/common/acc_offload_logger.h \
+       ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/util/csrc/mf_out_logger.h ${PKG_DIR}/accoffload_operators/include/
+    cp "${PROJECT_DIR}"/src/util/csrc/mf_spinlock.h ${PKG_DIR}/accoffload_operators/include/
+fi
 
 # memfabric_hybrid wheel package
 if [ "${BUILD_PYTHON}" = "ON" ]; then
