@@ -18,8 +18,13 @@ current_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_path)
 sys.path.append(current_dir)
 libs_path = os.path.join(current_dir, 'lib')
-for lib in ["libmf_hybm_core.so", "libmf_smem.so", "libmf_acc_offload.so"]:
+for lib in ["libmf_hybm_core.so", "libmf_smem.so"]:
     ctypes.CDLL(os.path.join(libs_path, lib), mode=ctypes.RTLD_GLOBAL)
+
+offload_lib_path = os.path.join(libs_path, "libmf_acc_offload.so")
+offload_lib_loaded = os.path.isfile(offload_lib_path)
+if offload_lib_loaded:
+    ctypes.CDLL(offload_lib_path, mode=ctypes.RTLD_GLOBAL)
 
 # Preload optional dlopen-ed libraries (may not be packaged depending on build options)
 optional_libs = ["libboundscheck.so", "libhcom.so", "libetcd_client_v3.so"]
@@ -55,23 +60,12 @@ from _pymf_hybrid import (
     set_conf_store_tls_key,
     get_and_clear_last_err_msg,
 )
-from _pymf_acc_offload import offload
-from mf_acc_offload import empty, sparse_copy, sparse_copy_urma, npu_kvcache_scatter_copy, group_pack_copy
-
-offload.empty = empty
-offload.sparse_copy = sparse_copy
-offload.sparse_copy_urma = sparse_copy_urma
-offload.npu_kvcache_scatter_copy = npu_kvcache_scatter_copy
-offload.group_pack_copy = group_pack_copy
-
-
 __all__ = [
     'TransferEngine',
     'TransferOpcode',
     'create_config_store',
     'bm',
     'shm',
-    'offload',
     'initialize',
     'uninitialize',
     'set_log_level',
@@ -82,6 +76,17 @@ __all__ = [
     'get_and_clear_last_err_msg',
 ]
 __all__ += ['get_include_path', 'get_lib_path']
+
+if offload_lib_loaded:
+    from _pymf_acc_offload import offload
+    from mf_acc_offload import empty, sparse_copy, sparse_copy_urma, npu_kvcache_scatter_copy, group_pack_copy
+
+    offload.empty = empty
+    offload.sparse_copy = sparse_copy
+    offload.sparse_copy_urma = sparse_copy_urma
+    offload.npu_kvcache_scatter_copy = npu_kvcache_scatter_copy
+    offload.group_pack_copy = group_pack_copy
+    __all__.append('offload')
 
 # Import-time provisioning of HYBM AICPU Kernel (silent skip/install).
 from memfabric_hybrid._provision import provision  # noqa: E402

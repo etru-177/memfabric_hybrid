@@ -46,6 +46,7 @@ elif xpu_type == "GPU":
 
 
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "../../../.."))
+_BUILD_AICPU_ASSETS = xpu_type == "NPU" and check_env_flag("BUILD_ACC_OFFLOAD", "ON")
 
 
 _AICPU_WLIST = {
@@ -71,13 +72,20 @@ _WREL_SRC = [
 ]
 
 
-def _copy_wlist_assets(build_lib):
-    """Copy ops tree and AICPU white-list files into build_lib."""
+def _clean_aicpu_assets(build_lib):
     pkg_build = os.path.join(build_lib, "memfabric_hybrid")
     for subdir in ("_ops", "_hybm_src", "_acc_offload_src", "_util_src"):
         d = os.path.join(pkg_build, subdir)
         if os.path.isdir(d):
             shutil.rmtree(d)
+    marker = os.path.join(pkg_build, ".hybm_aicpu_provision_wheel_only")
+    if os.path.exists(marker):
+        os.remove(marker)
+
+
+def _copy_wlist_assets(build_lib):
+    """Copy ops tree and AICPU white-list files into build_lib."""
+    pkg_build = os.path.join(build_lib, "memfabric_hybrid")
     # Recursively copy entire ops directory (no whitelist filtering).
     shutil.copytree(
         os.path.join(_PROJECT_ROOT, "src/hybm/ops"),
@@ -101,11 +109,13 @@ class _AicpuBuildPy(build_py):
 
     def run(self):
         super().run()
-        _copy_wlist_assets(self.build_lib)
-        pkg_build = os.path.join(self.build_lib, "memfabric_hybrid")
-        marker = os.path.join(pkg_build, ".hybm_aicpu_provision_wheel_only")
-        with open(marker, "w") as f:
-            f.write("")
+        _clean_aicpu_assets(self.build_lib)
+        if _BUILD_AICPU_ASSETS:
+            _copy_wlist_assets(self.build_lib)
+            pkg_build = os.path.join(self.build_lib, "memfabric_hybrid")
+            marker = os.path.join(pkg_build, ".hybm_aicpu_provision_wheel_only")
+            with open(marker, "w") as f:
+                f.write("")
 
 
 class BinaryDistribution(Distribution):

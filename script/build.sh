@@ -22,12 +22,19 @@ BUILD_HCOM_WITH_UB=${10:-OFF}
 BUILD_ETCD_BACKEND=${11:-OFF}
 BUILD_TOOL=${12:-cmake}
 BUILD_LOCAL_DRAM_VALIDATION=${13:-OFF}
+BUILD_ACC_OFFLOAD=${14:-ON}
 # 导出环境变量用于后续构建whl包
 export MF_BUILD_HCOM=${8:-OFF}
 export MF_BUILD_HCOM_WITH_RDMA=${9:-ON}
 export MF_BUILD_HCOM_WITH_UB=${10:-OFF}
 export BUILD_ETCD_BACKEND=${11:-OFF}
 export BUILD_TOOL=${12:-cmake}
+export BUILD_ACC_OFFLOAD
+
+if [ "${XPU_TYPE}" == "NONE" ]; then
+  BUILD_ACC_OFFLOAD="OFF"
+  export BUILD_ACC_OFFLOAD
+fi
 
 if [ "${BUILD_LOCAL_DRAM_VALIDATION}" != "ON" ] && [ "${BUILD_LOCAL_DRAM_VALIDATION}" != "OFF" ]; then
   echo "Invalid BUILD_LOCAL_DRAM_VALIDATION value: ${BUILD_LOCAL_DRAM_VALIDATION}" >&2
@@ -39,6 +46,14 @@ if [ "${BUILD_LOCAL_DRAM_VALIDATION}" == "ON" ] && [ "${XPU_TYPE}" != "NPU" ]; t
 fi
 if [ "${BUILD_LOCAL_DRAM_VALIDATION}" == "ON" ] && [ "${BUILD_TOOL}" != "cmake" ]; then
   echo "BUILD_LOCAL_DRAM_VALIDATION requires BUILD_TOOL=cmake" >&2
+  exit 1
+fi
+if [ "${BUILD_ACC_OFFLOAD}" != "ON" ] && [ "${BUILD_ACC_OFFLOAD}" != "OFF" ]; then
+  echo "Invalid BUILD_ACC_OFFLOAD value: ${BUILD_ACC_OFFLOAD}" >&2
+  exit 1
+fi
+if [ "${BUILD_ACC_OFFLOAD}" == "OFF" ] && [ "${BUILD_TOOL}" != "cmake" ]; then
+  echo "BUILD_ACC_OFFLOAD=OFF currently requires BUILD_TOOL=cmake" >&2
   exit 1
 fi
 
@@ -73,16 +88,21 @@ copy_bazel_artifacts()
     cp -v "${PROJ_DIR}/bazel-bin/src/smem/csrc/libmf_smem.so" "${PROJ_DIR}/output/smem/lib64/"
     mkdir -p ${PROJ_DIR}/output/hybm/lib64/
     cp -v "${PROJ_DIR}/bazel-bin/src/hybm/csrc/libmf_hybm_core.so" "${PROJ_DIR}/output/hybm/lib64/"
-    mkdir -p ${PROJ_DIR}/output/acc_offload/lib64/
-    cp -v "${PROJ_DIR}/bazel-bin/src/acc_offload/csrc/libmf_acc_offload.so" "${PROJ_DIR}/output/acc_offload/lib64/"
+    if [ "${BUILD_ACC_OFFLOAD}" == "ON" ]; then
+        mkdir -p ${PROJ_DIR}/output/acc_offload/lib64/
+        cp -v "${PROJ_DIR}/bazel-bin/src/acc_offload/csrc/libmf_acc_offload.so" \
+            "${PROJ_DIR}/output/acc_offload/lib64/"
+    fi
     mkdir -p ${PROJ_DIR}/output/smem/include/host/
     cp -v "${PROJ_DIR}/src/smem/include/host/"*.h "${PROJ_DIR}/output/smem/include/host/"
     mkdir -p ${PROJ_DIR}/output/smem/include/device/
     cp -v "${PROJ_DIR}/src/smem/include/device/"*.h "${PROJ_DIR}/output/smem/include/device/"
     mkdir -p ${PROJ_DIR}/output/hybm/include/
     cp -v "${PROJ_DIR}/src/hybm/include/"*.h "${PROJ_DIR}/output/hybm/include/"
-    mkdir -p ${PROJ_DIR}/output/acc_offload/include/host/
-    cp -v "${PROJ_DIR}/src/acc_offload/include/host/"*.h "${PROJ_DIR}/output/acc_offload/include/host/"
+    if [ "${BUILD_ACC_OFFLOAD}" == "ON" ]; then
+        mkdir -p ${PROJ_DIR}/output/acc_offload/include/host/
+        cp -v "${PROJ_DIR}/src/acc_offload/include/host/"*.h "${PROJ_DIR}/output/acc_offload/include/host/"
+    fi
 
     # copy from bazel-bin to build
     if [ "${BUILD_PYTHON}" == "ON" ]; then
@@ -90,8 +110,11 @@ copy_bazel_artifacts()
         cp -v "${PROJ_DIR}"/bazel-bin/src/smem/csrc/python_wrapper/mk_transfer_adapter/_pymf_transfer.so "${PROJ_DIR}"/build/src/smem/csrc/python_wrapper/mk_transfer_adapter/
         mkdir -p "${PROJ_DIR}"/build/src/smem/csrc/python_wrapper/memfabric_hybrid/
         cp -v "${PROJ_DIR}"/bazel-bin/src/smem/csrc/python_wrapper/memfabric_hybrid/_pymf_hybrid.so "${PROJ_DIR}"/build/src/smem/csrc/python_wrapper/memfabric_hybrid/
-        mkdir -p "${PROJ_DIR}"/build/src/acc_offload/csrc/python_wrapper/
-        cp -v "${PROJ_DIR}"/bazel-bin/src/acc_offload/csrc/python_wrapper/_pymf_acc_offload.so "${PROJ_DIR}"/build/src/acc_offload/csrc/python_wrapper/
+        if [ "${BUILD_ACC_OFFLOAD}" == "ON" ]; then
+            mkdir -p "${PROJ_DIR}"/build/src/acc_offload/csrc/python_wrapper/
+            cp -v "${PROJ_DIR}"/bazel-bin/src/acc_offload/csrc/python_wrapper/_pymf_acc_offload.so \
+                "${PROJ_DIR}"/build/src/acc_offload/csrc/python_wrapper/
+        fi
     fi
 
     if [ "${BUILD_HCOM}" == "ON" ]; then
@@ -191,6 +214,7 @@ if [ "${BUILD_TOOL}" == "cmake" ]; then
         -DBUILD_WITH_UB="${BUILD_HCOM_WITH_UB}" \
         -DBUILD_ETCD_BACKEND="${BUILD_ETCD_BACKEND}" \
         -DBUILD_LOCAL_DRAM_VALIDATION="${BUILD_LOCAL_DRAM_VALIDATION}" \
+        -DBUILD_ACC_OFFLOAD="${BUILD_ACC_OFFLOAD}" \
         -S . \
         -B build/
     ${MAKE_CMD} install -j"${MF_BUILD_JOBS}" -C build/
@@ -282,10 +306,14 @@ fi
 
 # memfabric_hybrid
 mkdir -p ${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib
+rm -f "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib/libmf_acc_offload.so"
 # --- 动态库：lib/ ---
 \cp -v "${PROJ_DIR}/output/smem/lib64/libmf_smem.so" "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib/"
 \cp -v "${PROJ_DIR}/output/hybm/lib64/libmf_hybm_core.so" "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib/"
-\cp -v "${PROJ_DIR}/output/acc_offload/lib64/libmf_acc_offload.so" "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib/"
+if [ "${BUILD_ACC_OFFLOAD}" == "ON" ]; then
+  \cp -v "${PROJ_DIR}/output/acc_offload/lib64/libmf_acc_offload.so" \
+      "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib/"
+fi
 # --- 头文件：smem/include/host/ ---
 mkdir -p ${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/include/smem/host
 cp -v "${PROJ_DIR}/output/smem/include/host/"*.h "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/include/smem/host/"
@@ -346,7 +374,9 @@ do
         rm -rf build/
         mkdir -p build/
         if [ "${BUILD_TOOL}" == "cmake" ]; then
-            cmake -G "$GENERATOR" -DCMAKE_BUILD_TYPE="${BUILD_MODE}" -DBUILD_OPEN_ABI="${BUILD_OPEN_ABI}" -S . -B build/
+            cmake -G "$GENERATOR" -DCMAKE_BUILD_TYPE="${BUILD_MODE}" -DBUILD_OPEN_ABI="${BUILD_OPEN_ABI}" \
+                -DBUILD_PYTHON="${BUILD_PYTHON}" -DXPU_TYPE="${XPU_TYPE}" \
+                -DBUILD_ACC_OFFLOAD="${BUILD_ACC_OFFLOAD}" -S . -B build/
             ${MAKE_CMD} -j"${MF_BUILD_JOBS}" -C build
         else
             bazel clean --async
@@ -361,7 +391,10 @@ do
     rm -rf "${PROJ_DIR}"/src/smem/python/memfabric_hybrid/memfabric_hybrid/_pymf_transfer*.so
     \cp -v "${PROJ_DIR}"/build/src/smem/csrc/python_wrapper/mk_transfer_adapter/_pymf_transfer*.so "${PROJ_DIR}"/src/smem/python/memfabric_hybrid/memfabric_hybrid/
     rm -rf "${PROJ_DIR}"/src/smem/python/memfabric_hybrid/memfabric_hybrid/_pymf_acc_offload*.so
-    \cp -v "${PROJ_DIR}"/build/src/acc_offload/csrc/python_wrapper/_pymf_acc_offload*.so "${PROJ_DIR}"/src/smem/python/memfabric_hybrid/memfabric_hybrid/
+    if [ "${BUILD_ACC_OFFLOAD}" == "ON" ]; then
+        \cp -v "${PROJ_DIR}"/build/src/acc_offload/csrc/python_wrapper/_pymf_acc_offload*.so \
+            "${PROJ_DIR}"/src/smem/python/memfabric_hybrid/memfabric_hybrid/
+    fi
     cd "${PROJ_DIR}/src/smem/python/memfabric_hybrid"
     rm -rf build memfabric_hybrid.egg-info
     if check_contains_path "${PROJ_DIR}/src/smem/python/memfabric_hybrid/memfabric_hybrid/lib"; then
