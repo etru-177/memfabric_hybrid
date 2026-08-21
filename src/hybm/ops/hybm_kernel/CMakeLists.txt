@@ -8,7 +8,7 @@ endif()
 
 set(HYBM_AICPU_PACKAGE_NAME cann-hybm-compat.tar.gz)
 set(AICPU_COMPILER "${ASCEND_HOME_PATH}/toolkit/toolchain/hcc/bin/aarch64-target-linux-gnu-g++")
-set(_ASCEND_INC_DIR "${ASCEND_HOME_PATH}/aarch64-linux/pkg_inc/base")
+set(_ASCEND_INC_DIR "${ASCEND_HOME_PATH}/pkg_inc/base")
 
 # Output artifacts in build directory (not directly to install dir)
 set(AICPU_SO_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/libcann_hybm_kernel.so")
