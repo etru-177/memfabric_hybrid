@@ -137,7 +137,7 @@ void AccTcpServerDefault::StopAfterFork()
     /* stop delay cleanup */
     StopAndCleanDelayCleanup(true);
 
-    StopAndCleanSSLHelper();
+    StopAndCleanSSLHelper(true);
 }
 
 Result AccTcpServerDefault::ValidateOptions() const
@@ -279,7 +279,7 @@ void AccTcpServerDefault::StopAndCleanWorkers(bool afterFork)
     }
 
     for (auto &item : workers_) {
-        item->Stop();
+        item->Stop(afterFork);
     }
     workers_.clear();
     connectedLinks_.clear();
