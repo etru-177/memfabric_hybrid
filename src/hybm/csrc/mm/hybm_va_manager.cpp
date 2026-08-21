@@ -10,11 +10,12 @@
  * See the Mulan PSL v2 for more details.
 */
 
-#include <sstream>
 #include <algorithm>
-#include <cstring>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <set>
+#include <sstream>
 
 #include "dl_hal_api.h"
 #include "hybm_def.h"
@@ -408,9 +409,14 @@ uint64_t HybmVaManager::AllocReserveLvaInner(uint32_t localRankId, uint64_t size
     }
     uint64_t startAddr = HYBM_GVM_START_ADDR;
     uint64_t endAddr = HYBM_GVM_END_ADDR;
-    if (soc_ == ASCEND_950) {
+    const char *gvaLayout = std::getenv("MF_GVA_LAYOUT");
+    const bool useA5Gva = soc_ == ASCEND_950 || (gvaLayout != nullptr && std::strcmp(gvaLayout, "A5") == 0);
+    if (useA5Gva) {
         startAddr = HYBM_GVM_START_ADDR_A5;
         endAddr = HYBM_GVM_END_ADDR_A5;
+        if (soc_ != ASCEND_950) {
+            BM_LOG_INFO("Use A5 GVA layout from MF_GVA_LAYOUT");
+        }
     }
 
     uint64_t upperLimit = endAddr - startAddr;
