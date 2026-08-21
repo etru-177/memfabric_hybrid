@@ -10,21 +10,38 @@
 # MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 # See the Mulan PSL v2 for more details.
 
+import argparse
+import importlib.util
 import multiprocessing as mp
+import os.path
+
 import torch
 import torch_npu
 import memfabric_hybrid as mf
 from memfabric_hybrid import offload
 
 
+def _load_timing_utils():
+    """Load ../timing_utils.py by file path, avoiding sys.path modification (G.PSL.03)."""
+    utils_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "timing_utils.py")
+    spec = importlib.util.spec_from_file_location("timing_utils", utils_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_timing = _load_timing_utils()
+report_timing = _timing.report_timing
+time_with_npu_event = _timing.time_with_npu_event
+
+
 ONE_GIB = 1 << 30
-WORLD_SIZE = 4
-RANK_0, DEVICE_0 = 0, 0
-RANK_1, DEVICE_1 = 1, 1
-RANK_2, DEVICE_2 = 2, 2
-RANK_3, DEVICE_3 = 3, 3
+DEFAULT_WORLD_SIZE = 4
+CHIP_MAX_WORLD_SIZE = {"A3": 16, "A5": 8}
+FALLBACK_MAX_WORLD_SIZE = 8
 K_DIM = 512
 V_DIM = 64
+WARMUP_ITERS = 5
 
 
 def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
@@ -70,8 +87,16 @@ def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
     size_ptr = torch.tensor(size, dtype=torch.int32).npu()
     device = data['npu']['keys'][0].device
 
-    assert offload.sparse_copy(src_ptrs, dst_ptrs, len_ptrs, size_ptr, device) == 0, "offload.sparse_copy failed"
+    total_bytes = sum(data['len']['keys']) + sum(data['len']['values'])
+
+    def copy_fn():
+        assert offload.sparse_copy(src_ptrs, dst_ptrs, len_ptrs, size_ptr, device) == 0, "offload.sparse_copy failed"
+
+    for _ in range(WARMUP_ITERS):
+        copy_fn()
     torch.npu.synchronize()
+
+    report_timing(rank_id, "npu_event", time_with_npu_event(copy_fn), total_bytes)
 
     dst_tensors = data['npu']['keys'] + data['npu']['values']
     for dst_tensor in dst_tensors:
@@ -82,26 +107,60 @@ def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
     sync.wait()
 
 
+def _detect_chip_type() -> str:
+    """Detect chip type via acl: Ascend950*/Ascend910_95* -> A5, Ascend910B* -> A2, Ascend910* -> A3; '' if unknown."""
+    try:
+        import acl
+
+        chip_name = acl.get_soc_name()
+    except Exception:
+        return ""
+    if not chip_name:
+        return ""
+    if "Ascend950" in chip_name or "Ascend910_95" in chip_name:
+        return "A5"
+    if "Ascend910B" in chip_name:
+        return "A2"
+    if "Ascend910" in chip_name:
+        return "A3"
+    return ""
+
+
+def _parse_world_size() -> int:
+    parser = argparse.ArgumentParser(description="local_dram_offload: per-rank local DRAM KV offload")
+    parser.add_argument(
+        "--world_size",
+        type=int,
+        default=DEFAULT_WORLD_SIZE,
+        help=f"number of ranks, range [1, chip max] (default: {DEFAULT_WORLD_SIZE})",
+    )
+    args = parser.parse_args()
+
+    chip_type = _detect_chip_type()
+    chip_max = CHIP_MAX_WORLD_SIZE.get(chip_type, FALLBACK_MAX_WORLD_SIZE)
+    if not 1 <= args.world_size <= chip_max:
+        raise ValueError(f"world_size={args.world_size} out of range [1, {chip_max}] on chip {chip_type or 'unknown'}")
+    return args.world_size
+
+
 def main():
+    world_size = _parse_world_size()
+
     mp.set_start_method("spawn", force=True)
-    sync = mp.Barrier(WORLD_SIZE)
+    sync = mp.Barrier(world_size)
 
-    p0 = mp.Process(target=_rank_main, args=(RANK_0, DEVICE_0, sync))
-    p1 = mp.Process(target=_rank_main, args=(RANK_1, DEVICE_1, sync))
-    p2 = mp.Process(target=_rank_main, args=(RANK_2, DEVICE_2, sync))
-    p3 = mp.Process(target=_rank_main, args=(RANK_3, DEVICE_3, sync))
+    procs = []
+    for rank_id in range(world_size):
+        p = mp.Process(target=_rank_main, args=(rank_id, rank_id, sync))
+        procs.append(p)
+        p.start()
 
-    p0.start()
-    p1.start()
-    p2.start()
-    p3.start()
-    p0.join()
-    p1.join()
-    p2.join()
-    p3.join()
+    for p in procs:
+        p.join()
 
-    if p0.exitcode != 0 or p1.exitcode != 0 or p2.exitcode != 0 or p3.exitcode != 0:
-        raise RuntimeError(f"child rank failed: p0={p0.exitcode}, p1={p1.exitcode}, p2={p2.exitcode}, p3={p3.exitcode}")
+    if any(p.exitcode != 0 for p in procs):
+        codes = [p.exitcode for p in procs]
+        raise RuntimeError(f"child rank failed: {codes}")
     print("local_dram_offload: all ranks OK", flush=True)
 
 

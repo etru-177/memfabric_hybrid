@@ -18,6 +18,11 @@
 extern "C" {
 void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint8_t devIdx)
 {
+#if defined(ACC_SOC_VERSION_A5)
+    constexpr uint32_t blockDim = 64;
+#else
+    constexpr uint32_t blockDim = 32;
+#endif
     c10_npu::OptionalNPUGuard npuGuard;
     npuGuard.set_index(devIdx);
 
@@ -25,7 +30,7 @@ void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtr
     void *npuStream = stream.stream(false);
 
     auto callback = [srcPtrs, dstPtrs, lenPtrs, sizePtr, npuStream]() -> int {
-        OffloadOpsSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, npuStream);
+        OffloadOpsSparseCopy(srcPtrs, dstPtrs, lenPtrs, sizePtr, blockDim, npuStream);
         return 0;
     };
 

@@ -422,6 +422,7 @@ Ensure npu-smi is in PATH (source CANN set_env.sh) before running .run."
         -Wcast-qual -Wwrite-strings -Wsign-compare -Wextra \
         -fvisibility-inlines-hidden -ftrapv \
         ${abi_flag} \
+        -DACC_SOC_VERSION_${ascend_version} \
         -isystem ${ascend_home}/include \
         -isystem ${ascend_home}/include/experiment/runtime/runtime/ \
         -isystem ${torch_dir}/include \

@@ -28,9 +28,7 @@ public:
     {
         aivNum_ = AscendC::GetBlockNum();
         aivIndex_ = AscendC::GetBlockIdx();
-
-        uint32_t oriSize = *(reinterpret_cast<__gm__ uint32_t *>(size));
-        size_ = oriSize / 2;
+        size_ = *(reinterpret_cast<__gm__ uint32_t *>(size));
         inputs_ = reinterpret_cast<__gm__ uint64_t *>(inputs);
         outputs_ = reinterpret_cast<__gm__ uint64_t *>(outputs);
         lens_ = reinterpret_cast<__gm__ uint32_t *>(lens);
@@ -39,56 +37,80 @@ public:
 
     HYBM_AICORE_KERNEL void Process()
     {
-        uint32_t perCoreSize = size_ / aivNum_;
-        uint32_t kStart = aivIndex_ * perCoreSize;
-        uint32_t vStart = size_ + kStart;
-        uint32_t lastAivIdx = aivNum_ - 1;
-        if (aivIndex_ == lastAivIdx) {
-            perCoreSize = size_ - lastAivIdx * perCoreSize;
-        }
-        uint32_t kEnd = kStart + perCoreSize;
-        uint32_t vEnd = vStart + perCoreSize;
-
-        for (uint32_t i = kStart; i < kEnd; i++) {
-            auto inputPtr = reinterpret_cast<__gm__ T *>(inputs_[i]);
-            auto outputPtr = reinterpret_cast<__gm__ T *>(outputs_[i]);
-            auto len = lens_[i];
-            inputGm_.SetGlobalBuffer(inputPtr, len);
-            outputGm_.SetGlobalBuffer(outputPtr, len);
-            CpGM2GM(len);
-        }
-
-        for (uint32_t i = vStart; i < vEnd; i++) {
-            auto inputPtr = reinterpret_cast<__gm__ T *>(inputs_[i]);
-            auto outputPtr = reinterpret_cast<__gm__ T *>(outputs_[i]);
-            auto len = lens_[i];
-            inputGm_.SetGlobalBuffer(inputPtr, len);
-            outputGm_.SetGlobalBuffer(outputPtr, len);
-            CpGM2GM(len);
+        if (size_ >= aivNum_) {
+            ProcessByEntry();
+        } else {
+            ProcessByBytes();
         }
     }
 
 private:
-    HYBM_AICORE_KERNEL void CpGM2GM(uint32_t len)
+    HYBM_AICORE_KERNEL void ProcessByEntry()
     {
-        uint32_t leftLen = len * sizeof(T);
+        for (uint32_t i = aivIndex_; i < size_; i += aivNum_) {
+            auto inputPtr = reinterpret_cast<__gm__ T *>(inputs_[i]);
+            auto outputPtr = reinterpret_cast<__gm__ T *>(outputs_[i]);
+            inputGm_.SetGlobalBuffer(inputPtr, lens_[i]);
+            outputGm_.SetGlobalBuffer(outputPtr, lens_[i]);
+            CpGM2GM(lens_[i], 0);
+        }
+    }
+
+    HYBM_AICORE_KERNEL void ProcessByBytes()
+    {
+        uint64_t totalBytes = 0;
+        for (uint32_t i = 0; i < size_; i++) {
+            totalBytes += static_cast<uint64_t>(lens_[i]) * sizeof(T);
+        }
+        uint64_t base = totalBytes / aivNum_;
+        uint64_t rem = totalBytes % aivNum_;
+        uint64_t sliceBytes = base + (aivIndex_ < rem ? 1 : 0);
+        if (sliceBytes == 0) {
+            return;
+        }
+        uint64_t startByte = aivIndex_ * base + (aivIndex_ < rem ? aivIndex_ : rem);
+        uint64_t endByte = startByte + sliceBytes;
+
+        uint64_t curByte = 0;
+        for (uint32_t i = 0; i < size_; i++) {
+            uint64_t entryBytes = static_cast<uint64_t>(lens_[i]) * sizeof(T);
+            uint64_t entryEnd = curByte + entryBytes;
+            if (entryEnd > startByte && curByte < endByte) {
+                uint64_t ovStart = (curByte > startByte) ? curByte : startByte;
+                uint64_t ovEnd = (entryEnd < endByte) ? entryEnd : endByte;
+                uint32_t offsetElems = static_cast<uint32_t>(ovStart - curByte) / sizeof(T);
+                uint32_t copyElems = static_cast<uint32_t>(ovEnd - ovStart) / sizeof(T);
+                auto inputPtr = reinterpret_cast<__gm__ T *>(inputs_[i]);
+                auto outputPtr = reinterpret_cast<__gm__ T *>(outputs_[i]);
+                inputGm_.SetGlobalBuffer(inputPtr, lens_[i]);
+                outputGm_.SetGlobalBuffer(outputPtr, lens_[i]);
+                CpGM2GM(copyElems, offsetElems);
+            }
+            curByte = entryEnd;
+            if (curByte >= endByte) {
+                break;
+            }
+        }
+    }
+
+    HYBM_AICORE_KERNEL void CpGM2GM(uint32_t lenElems, uint32_t offsetElems)
+    {
+        uint32_t leftBytes = lenElems * sizeof(T);
         uint32_t times = 0;
         uint32_t preCopyNum = UB_ONCE_SIZE / sizeof(T);
         AscendC::DataCopyPadExtParams<T> padParams;
-
-        while (leftLen > 0) {
-            uint32_t curCopySize = (leftLen > UB_ONCE_SIZE) ? UB_ONCE_SIZE : leftLen;
+        while (leftBytes > 0) {
+            uint32_t curCopyBytes = (leftBytes > UB_ONCE_SIZE) ? UB_ONCE_SIZE : leftBytes;
             AscendC::LocalTensor<T> local = bindQueue_.AllocTensor<T>();
-            AscendC::DataCopyExtParams dataCopyParams(1, curCopySize, 0, 0, 0);
-            AscendC::DataCopyPad(local, inputGm_[times * preCopyNum], dataCopyParams, padParams);
+            AscendC::DataCopyExtParams dataCopyParams(1, curCopyBytes, 0, 0, 0);
+            AscendC::DataCopyPad(local, inputGm_[offsetElems + times * preCopyNum], dataCopyParams, padParams);
             bindQueue_.EnQue(local);
             local = bindQueue_.DeQue<T>();
-            AscendC::DataCopyPad(outputGm_[times * preCopyNum], local, dataCopyParams);
+            AscendC::DataCopyPad(outputGm_[offsetElems + times * preCopyNum], local, dataCopyParams);
             bindQueue_.FreeTensor(local);
-            leftLen = (leftLen > UB_ONCE_SIZE) ? leftLen - UB_ONCE_SIZE : 0;
+            leftBytes = (leftBytes > UB_ONCE_SIZE) ? leftBytes - UB_ONCE_SIZE : 0;
             times++;
-        };
-
+        }
         AscendC::PipeBarrier<PIPE_ALL>();
     }
 

@@ -22,9 +22,8 @@ extern "C" __global__ __aicore__ void OffloadSparseCopyOps(GM_ADDR inputs, GM_AD
 }
 
 extern "C" void OffloadOpsSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr,
-                                     void *stream)
+                                     uint32_t blockDim, void *stream)
 {
-    constexpr uint32_t blockDim = 32;
     uint8_t *inputs = reinterpret_cast<uint8_t *>(srcPtrs);
     uint8_t *outputs = reinterpret_cast<uint8_t *>(dstPtrs);
     uint8_t *lens = reinterpret_cast<uint8_t *>(lenPtrs);
