@@ -72,6 +72,10 @@ private:
     Result MallocEmptySlice(MemSlicePtr &slice) noexcept;
     Result MallocFromHost(size_t size, uint32_t devId, drv_mem_handle_t **handle) noexcept;
     Result MallocFromDevice(size_t size, uint32_t devId, drv_mem_handle_t **handle) noexcept;
+    Result MapMemByImport(const MemSlicePtr &slice, uint64_t allocAddr, uint64_t size,
+                          drv_mem_handle_t *handle) noexcept;
+    Result MapMemBySetAccess(const MemSlicePtr &slice, uint64_t allocAddr, uint64_t size,
+                             drv_mem_handle_t *handle) noexcept;
     Result HalMemCreateAdapterFromHost(size_t size, drv_mem_handle_t **handle, drv_mem_prop prop);
     uint64_t ReserveLva(const HostSdmaExportInfo &im);
 

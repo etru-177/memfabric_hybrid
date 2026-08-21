@@ -289,7 +289,24 @@ Result HybmVmmBasedSegment::AllocLocalMemory(uint64_t size, MemSlicePtr &slice) 
         slices_.erase(slice->index_);
         return ret;
     }
+
+    if ((options_.flags & HYBM_FLAG_DRAM_MAP_HOST_VA) == 0) {
+        ret = MapMemByImport(slice, allocAddr, size, handle);
+    } else {
+        ret = MapMemBySetAccess(slice, allocAddr, size, handle);
+    }
+    BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "Map mem failed:" << ret, ret);
+    BM_LOG_INFO("Alloc mem success, type:" << memType << " addr:" << VaToInfo(allocAddr) << " size:" << size
+                                           << " flag:" << options_.flags);
+    return BM_OK;
+}
+
+Result HybmVmmBasedSegment::MapMemByImport(const MemSlicePtr &slice, uint64_t allocAddr, uint64_t size,
+                                           drv_mem_handle_t *handle) noexcept
+{
+    Result ret = BM_OK;
     MemShareHandle sHandle = {};
+    drv_mem_handle_t *dHandle = handle;
     ret = ExportInner(slice, sHandle);
     if (ret != BM_OK) {
         BM_LOG_ERROR("export failed: " << ret);
@@ -298,11 +315,11 @@ Result HybmVmmBasedSegment::AllocLocalMemory(uint64_t size, MemSlicePtr &slice) 
         return BM_ERROR;
     }
 
-    drv_mem_handle_t *dHandle = handle;
-    if (options_.segType == HYBM_MST_DRAM && options_.shared && (options_.flags & HYBM_FLAG_DRAM_MAP_HOST_VA) == 0) {
+    if (options_.segType == HYBM_MST_DRAM && options_.shared) {
         ret = DlHalApi::HalMemImport(MEM_HANDLE_TYPE_FABRIC, &sHandle, logicDeviceId_, &dHandle);
         BM_VALIDATE_RETURN(ret == BM_OK, "HalMemImport memory failed:" << ret, BM_ERROR);
     }
+
     ret = DlHalApi::HalMemMap(reinterpret_cast<void *>(allocAddr), size, 0, dHandle, 0);
     if (ret != BM_OK) {
         BM_LOG_ERROR("HalMemMap failed, ret: " << ret << " addr: 0x" << std::hex << allocAddr << " size: " << size
@@ -311,20 +328,45 @@ Result HybmVmmBasedSegment::AllocLocalMemory(uint64_t size, MemSlicePtr &slice) 
         slices_.erase(slice->index_);
         return BM_DL_FUNCTION_FAILED;
     }
-    if (options_.segType == HYBM_MST_DRAM && options_.shared && (options_.flags & HYBM_FLAG_DRAM_MAP_HOST_VA) != 0) {
-        struct drv_mem_access_desc desc[1];
+    return BM_OK;
+}
+
+Result HybmVmmBasedSegment::MapMemBySetAccess(const MemSlicePtr &slice, uint64_t allocAddr, uint64_t size,
+                                              drv_mem_handle_t *handle) noexcept
+{
+    drv_mem_handle_t *dHandle = handle;
+    Result ret = DlHalApi::HalMemMap(reinterpret_cast<void *>(allocAddr), size, 0, dHandle, 0);
+    if (ret != BM_OK) {
+        BM_LOG_ERROR("HalMemMap failed, ret: " << ret << " addr: 0x" << std::hex << allocAddr << " size: " << size
+                                               << " segType: " << options_.segType);
+        DlHalApi::HalMemRelease(dHandle);
+        slices_.erase(slice->index_);
+        return BM_DL_FUNCTION_FAILED;
+    }
+
+    if (options_.segType == HYBM_MST_DRAM && options_.shared) {
+        struct drv_mem_access_desc desc[1] = {};
         desc[0].location.side = MEM_DEV_SIDE;
         desc[0].location.id = logicDeviceId_;
         desc[0].type = MEM_ACCESS_TYPE_READWRITE;
         ret = DlHalApi::HalMemSetAccess(reinterpret_cast<void *>(allocAddr), size, desc, 1);
         if (ret != BM_OK) {
-            BM_LOG_ERROR("HalMemSetAccess failed: " << ret);
+            BM_LOG_ERROR("HalMemSetAccess failed:" << ret << " rankId:" << options_.rankId << " deviceId:"
+                                                   << logicDeviceId_ << " addr:" << allocAddr << " size:" << size);
             DlHalApi::HalMemRelease(dHandle);
             slices_.erase(slice->index_);
             return BM_DL_FUNCTION_FAILED;
         }
     }
-    BM_LOG_INFO("alloc mem success, type:" << memType << " addr:" << VaToInfo(allocAddr) << " size:" << size);
+
+    MemShareHandle sHandle = {};
+    ret = ExportInner(slice, sHandle);
+    if (ret != BM_OK) {
+        BM_LOG_ERROR("export failed:" << ret << " rankId:" << options_.rankId << " sliceIndex:" << slice->index_);
+        DlHalApi::HalMemRelease(handle);
+        slices_.erase(slice->index_);
+        return BM_ERROR;
+    }
     return BM_OK;
 }
 
