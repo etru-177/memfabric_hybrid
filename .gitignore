@@ -6,6 +6,7 @@
 /.idea/
 /output/
 /build/
+build_cmake/
 /script/git_last_commit.txt
 /.clangd
 package/*

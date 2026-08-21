@@ -365,11 +365,39 @@ Ensure npu-smi is in PATH (source CANN set_env.sh) before running .run."
 
     cd ${script_dir}/../accoffload_operators
 
-    bisheng -x asc acc_offload_sparse_copy.cpp acc_offload_group_pack_copy.cpp \
-        -fPIC -shared -g -o libmf_hybm_accoffload_kernel.so ${cce_param}
+    export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${ASCEND_TOOLKIT_HOME:-/usr/local/Ascend/ascend-toolkit/latest}}"
+    case "${ascend_version}" in
+        A5)     mf_soc_version="ascend950pr_9599" ;;
+        A3)     mf_soc_version="ascend910_9382" ;;
+        A2)     print "WARNING" "A2 (Ascend910B) unsupported for accoffload DRAM offload, skip accoffload kernel build."
+                return ;;
+        *)      print "ERROR" "unsupported ascend chip '${ascend_version}' for accoffload kernel cmake build."
+                rm -rf build_cmake
+                exit 1 ;;
+    esac
+    rm -rf build_cmake && mkdir build_cmake
+    cmake -S . -B build_cmake \
+        -DSOC_VERSION=${mf_soc_version} \
+        -DCMAKE_BUILD_TYPE=RELEASE \
+        -DASCEND_HOME_PATH="${ASCEND_HOME_PATH}"
     if [ $? -ne 0 ]; then
-        print "ERROR" "bisheng compile acc_offload operators kernel failed."
-        rm -f libmf_hybm_accoffload_kernel.so
+        print "ERROR" "cmake configure accoffload kernel failed."
+        rm -rf build_cmake
+        exit 1
+    fi
+    cmake --build build_cmake -j$(nproc 2>/dev/null || echo 8)
+    if [ $? -ne 0 ]; then
+        print "ERROR" "cmake build accoffload kernel failed."
+        rm -rf build_cmake
+        exit 1
+    fi
+    KERN_A=build_cmake/lib/libmf_accoffload_kernel.a
+    if [ ! -f "${KERN_A}" ]; then
+        KERN_A=$(find build_cmake -name 'libmf_accoffload_kernel.a' -print -quit 2>/dev/null)
+    fi
+    if [ -z "${KERN_A}" ] || [ ! -f "${KERN_A}" ]; then
+        print "ERROR" "libmf_accoffload_kernel.a not found after cmake build."
+        rm -rf build_cmake
         exit 1
     fi
 
@@ -378,7 +406,7 @@ Ensure npu-smi is in PATH (source CANN set_env.sh) before running .run."
     torch_npu_dir=$(${python_bin} -c "import torch_npu; import os; print(os.path.dirname(torch_npu.__file__))" 2>/dev/null)
     if [ -z "${torch_dir}" ] || [ -z "${torch_npu_dir}" ]; then
         print "ERROR" "torch/torch_npu not found, cannot build accoffload extend lib."
-        rm -f libmf_hybm_accoffload_kernel.so
+        rm -rf build_cmake
         exit 1
     fi
     ascend_home=${ASCEND_TOOLKIT_HOME:-/usr/local/Ascend/ascend-toolkit/latest}
@@ -409,13 +437,14 @@ Ensure npu-smi is in PATH (source CANN set_env.sh) before running .run."
         acc_offload_operators_launch.cpp -o acc_offload_operators_launch.o
     if [ $? -ne 0 ]; then
         print "ERROR" "g++ compile acc_offload_operators_launch.cpp failed."
-        rm -f libmf_hybm_accoffload_kernel.so acc_offload_operators_launch.o
+        rm -rf build_cmake
+        rm -f acc_offload_operators_launch.o
         exit 1
     fi
 
     g++ -shared -fPIC -o libmf_hybm_accoffload.so \
         acc_offload_operators_launch.o \
-        -L. -lmf_hybm_accoffload_kernel \
+        -Wl,--whole-archive "${KERN_A}" -Wl,--no-whole-archive \
         -L${torch_dir}/lib -ltorch -lc10 -ltorch_python \
         -L${torch_npu_dir}/lib -ltorch_npu \
         -L${ascend_home}/lib64 -lopapi \
@@ -423,12 +452,14 @@ Ensure npu-smi is in PATH (source CANN set_env.sh) before running .run."
         -Wl,-rpath,\$ORIGIN -Wl,-rpath,${torch_dir}/lib -Wl,-rpath,${torch_npu_dir}/lib -Wl,-rpath,${ascend_home}/lib64
     if [ $? -ne 0 ]; then
         print "ERROR" "link libmf_hybm_accoffload.so failed."
-        rm -f libmf_hybm_accoffload_kernel.so acc_offload_operators_launch.o
+        rm -rf build_cmake
+        rm -f acc_offload_operators_launch.o
         exit 1
     fi
 
-    \cp libmf_hybm_accoffload.so libmf_hybm_accoffload_kernel.so ${install_dir}//${pkg_arch}-${os1}/lib64
-    rm -f libmf_hybm_accoffload.so libmf_hybm_accoffload_kernel.so acc_offload_operators_launch.o
+    \cp libmf_hybm_accoffload.so ${install_dir}//${pkg_arch}-${os1}/lib64
+    rm -f libmf_hybm_accoffload.so acc_offload_operators_launch.o
+    rm -rf build_cmake
     print "INFO" "install accoffload extend lib success"
 }
 
