@@ -15,9 +15,9 @@
 extern "C" __global__ __aicore__ void OffloadSparseCopyOps(GM_ADDR inputs, GM_ADDR outputs, GM_ADDR lens, GM_ADDR size)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-
+    AscendC::TPipe pipe;
     OffloadSparseCopyKernel<uint8_t> op;
-    op.Init(inputs, outputs, lens, size);
+    op.Init(&pipe, inputs, outputs, lens, size);
     op.Process();
 }
 

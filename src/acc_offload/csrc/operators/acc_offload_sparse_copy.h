@@ -18,45 +18,26 @@
 #define HYBM_AICORE_KERNEL __attribute__((always_inline)) __aicore__ __inline__
 
 constexpr int64_t UB_ONCE_SIZE = 176 * 1024;
+constexpr int64_t UB_DOUBLE_BUFFER_SIZE = 88 * 1024;
 
 template<typename T>
-class OffloadSparseCopyKernel {
+class OffloadMoeSparseCopyKernel {
 public:
-    HYBM_AICORE_KERNEL OffloadSparseCopyKernel() {}
+    HYBM_AICORE_KERNEL OffloadMoeSparseCopyKernel() {}
 
-    HYBM_AICORE_KERNEL void Init(GM_ADDR inputs, GM_ADDR outputs, GM_ADDR lens, GM_ADDR size)
+    HYBM_AICORE_KERNEL void Init(AscendC::TPipe *pipe, GM_ADDR inputs, GM_ADDR outputs, GM_ADDR lens, GM_ADDR size)
     {
+        pipe_ = pipe;
         aivNum_ = AscendC::GetBlockNum();
         aivIndex_ = AscendC::GetBlockIdx();
         size_ = *(reinterpret_cast<__gm__ uint32_t *>(size));
         inputs_ = reinterpret_cast<__gm__ uint64_t *>(inputs);
         outputs_ = reinterpret_cast<__gm__ uint64_t *>(outputs);
         lens_ = reinterpret_cast<__gm__ uint32_t *>(lens);
-        pipe_.InitBuffer(bindQueue_, 1, UB_ONCE_SIZE);
+        pipe_->InitBuffer(bindQueue_, 1, UB_ONCE_SIZE);
     }
 
     HYBM_AICORE_KERNEL void Process()
-    {
-        if (size_ >= aivNum_) {
-            ProcessByEntry();
-        } else {
-            ProcessByBytes();
-        }
-    }
-
-private:
-    HYBM_AICORE_KERNEL void ProcessByEntry()
-    {
-        for (uint32_t i = aivIndex_; i < size_; i += aivNum_) {
-            auto inputPtr = reinterpret_cast<__gm__ T *>(inputs_[i]);
-            auto outputPtr = reinterpret_cast<__gm__ T *>(outputs_[i]);
-            inputGm_.SetGlobalBuffer(inputPtr, lens_[i]);
-            outputGm_.SetGlobalBuffer(outputPtr, lens_[i]);
-            CpGM2GM(lens_[i], 0);
-        }
-    }
-
-    HYBM_AICORE_KERNEL void ProcessByBytes()
     {
         uint64_t totalBytes = 0;
         for (uint32_t i = 0; i < size_; i++) {
@@ -93,6 +74,7 @@ private:
         }
     }
 
+private:
     HYBM_AICORE_KERNEL void CpGM2GM(uint32_t lenElems, uint32_t offsetElems)
     {
         uint32_t leftBytes = lenElems * sizeof(T);
@@ -115,7 +97,7 @@ private:
     }
 
 private:
-    AscendC::TPipe pipe_;
+    AscendC::TPipe *pipe_;
     AscendC::TQueBind<AscendC::TPosition::VECIN, AscendC::TPosition::VECOUT, 1> bindQueue_;
     AscendC::GlobalTensor<T> inputGm_;
     AscendC::GlobalTensor<T> outputGm_;
@@ -125,6 +107,149 @@ private:
     __gm__ uint64_t *inputs_;
     __gm__ uint64_t *outputs_;
     __gm__ uint32_t *lens_;
+};
+
+template<typename T>
+class OffloadKVSparseCopyKernel {
+public:
+    HYBM_AICORE_KERNEL OffloadKVSparseCopyKernel() {}
+
+    HYBM_AICORE_KERNEL void Init(AscendC::TPipe *pipe, GM_ADDR inputs, GM_ADDR outputs, GM_ADDR lens, GM_ADDR size)
+    {
+        pipe_ = pipe;
+        aivNum_ = AscendC::GetBlockNum();
+        aivIndex_ = AscendC::GetBlockIdx();
+
+        size_ = *(reinterpret_cast<__gm__ uint32_t *>(size));
+        inputs_ = reinterpret_cast<__gm__ uint64_t *>(inputs);
+        outputs_ = reinterpret_cast<__gm__ uint64_t *>(outputs);
+        lens_ = reinterpret_cast<__gm__ uint32_t *>(lens);
+
+        pipe_->InitBuffer(bindQueue_, 2, UB_DOUBLE_BUFFER_SIZE);
+    }
+
+    HYBM_AICORE_KERNEL void Process()
+    {
+        uint32_t entry;
+        EntryCtx cur;
+        if (!FirstEntry(entry, cur)) {
+            return;
+        }
+        CopyIn(cur);
+        while (true) {
+            EntryCtx next;
+            bool hasNext = NextEntry(entry, next);
+            if (hasNext) {
+                CopyIn(next);
+            }
+            CopyOut(cur);
+            if (!hasNext) {
+                break;
+            }
+            cur = next;
+        }
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+
+private:
+    struct EntryCtx {
+        uint64_t src = 0;
+        uint64_t dst = 0;
+        uint32_t bytes = 0;
+    };
+
+    HYBM_AICORE_KERNEL bool LoadEntry(uint32_t entry, EntryCtx &ctx)
+    {
+        ctx.src = inputs_[entry];
+        ctx.dst = outputs_[entry];
+        ctx.bytes = lens_[entry] * static_cast<uint32_t>(sizeof(T));
+        return ctx.bytes > 0;
+    }
+
+    HYBM_AICORE_KERNEL bool FirstEntry(uint32_t &entry, EntryCtx &ctx)
+    {
+        entry = aivIndex_;
+        if (entry >= size_) {
+            return false;
+        }
+        if (LoadEntry(entry, ctx)) {
+            return true;
+        }
+        return NextEntry(entry, ctx);
+    }
+
+    HYBM_AICORE_KERNEL bool NextEntry(uint32_t &entry, EntryCtx &ctx)
+    {
+        while ((entry += aivNum_) < size_) {
+            if (LoadEntry(entry, ctx)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    HYBM_AICORE_KERNEL void CopyIn(const EntryCtx &ctx)
+    {
+        AscendC::LocalTensor<T> local = bindQueue_.AllocTensor<T>();
+        AscendC::GlobalTensor<T> srcGm;
+        srcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.src), ctx.bytes / static_cast<uint32_t>(sizeof(T)));
+        AscendC::DataCopyExtParams copyParams(1, ctx.bytes, 0, 0, 0);
+        AscendC::DataCopyPadExtParams<T> padParams{};
+        AscendC::DataCopyPad(local, srcGm, copyParams, padParams);
+        bindQueue_.EnQue(local);
+    }
+
+    HYBM_AICORE_KERNEL void CopyOut(const EntryCtx &ctx)
+    {
+        AscendC::LocalTensor<T> local = bindQueue_.DeQue<T>();
+        AscendC::GlobalTensor<T> dstGm;
+        dstGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.dst), ctx.bytes / static_cast<uint32_t>(sizeof(T)));
+        AscendC::DataCopyExtParams copyParams(1, ctx.bytes, 0, 0, 0);
+        AscendC::DataCopyPad(dstGm, local, copyParams);
+        bindQueue_.FreeTensor(local);
+    }
+
+private:
+    AscendC::TPipe *pipe_;
+    AscendC::TQueBind<AscendC::TPosition::VECIN, AscendC::TPosition::VECOUT, 2> bindQueue_;
+    uint32_t aivIndex_;
+    uint32_t aivNum_;
+    uint32_t size_;
+    __gm__ uint64_t *inputs_;
+    __gm__ uint64_t *outputs_;
+    __gm__ uint32_t *lens_;
+};
+
+template<typename T>
+class OffloadSparseCopyKernel {
+public:
+    HYBM_AICORE_KERNEL OffloadSparseCopyKernel() {}
+
+    HYBM_AICORE_KERNEL void Init(AscendC::TPipe *pipe, GM_ADDR inputs, GM_ADDR outputs, GM_ADDR lens, GM_ADDR size)
+    {
+        aivNum_ = AscendC::GetBlockNum();
+        size_ = *(reinterpret_cast<__gm__ uint32_t *>(size));
+        if (size_ >= aivNum_) {
+            kvCopy_.Init(pipe, inputs, outputs, lens, size);
+        } else {
+            moeCopy_.Init(pipe, inputs, outputs, lens, size);
+        }
+    }
+
+    HYBM_AICORE_KERNEL void Process()
+    {
+        if (size_ >= aivNum_) {
+            kvCopy_.Process();
+        } else {
+            moeCopy_.Process();
+        }
+    }
+
+private:
+    uint32_t size_;
+    uint32_t aivNum_;
+    OffloadKVSparseCopyKernel<T> kvCopy_;
+    OffloadMoeSparseCopyKernel<T> moeCopy_;
 };
 
 #endif // ACC_OFFLOAD_SPARSE_COPY_H
