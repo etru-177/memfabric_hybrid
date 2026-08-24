@@ -208,7 +208,7 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsFallsBackToPrepareForNewPeer
     manager.opened_ = false;
 }
 
-TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerMemoryKeysThroughPrepare)
+TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerMemoryKeysDirectly)
 {
     HcommImportGuard guard;
     DlHcommApi::gHcommMemImport = ImportDeviceMemory;
@@ -219,6 +219,7 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerM
     state.endpointDesc = endpoint;
     state.channel = TEST_CHANNEL;
     manager.opened_ = true;
+    manager.rankCount_ = 2U;
     manager.localEndpoint_ = std::make_shared<urma::UrmaEndpointEntity>();
     manager.localEndpoint_->hcommEndpoint = TEST_ENDPOINT;
     manager.localEndpoint_->desc.loc.locType = ENDPOINT_LOC_TYPE_HOST;
@@ -238,6 +239,8 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerM
 TEST(HostUrmaTransportManagerTest, UpdateRankOptionsRejectsExistingPeerEndpointChange)
 {
     HostUrmaTransportManager manager;
+    manager.opened_ = true;
+    manager.rankCount_ = 2U;
     auto endpoint = MakeEndpointDesc();
     auto &state = manager.remoteRanks_[REMOTE_RANK];
     state.endpointDesc = endpoint;
@@ -247,6 +250,22 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsRejectsExistingPeerEndpointC
     changedEndpoint.raws[0]++;
     HybmTransPrepareOptions changedOptions{};
     changedOptions.options[REMOTE_RANK].privateData = MakePrivateData(changedEndpoint);
-    changedOptions.options[REMOTE_RANK].privateData.ip[0] = '1';
     EXPECT_EQ(manager.UpdateRankOptions(changedOptions), BM_NOT_SUPPORTED);
+    manager.opened_ = false;
+}
+
+TEST(HostUrmaTransportManagerTest, PrepareRejectsExistingPeerEndpointChange)
+{
+    HostUrmaTransportManager manager;
+    manager.opened_ = true;
+    auto endpoint = MakeEndpointDesc();
+    auto &state = manager.remoteRanks_[REMOTE_RANK];
+    state.endpointDesc = endpoint;
+    state.channel = TEST_CHANNEL;
+
+    endpoint.raws[0]++;
+    HybmTransPrepareOptions changedOptions{};
+    changedOptions.options[REMOTE_RANK].privateData = MakePrivateData(endpoint);
+    EXPECT_EQ(manager.Prepare(changedOptions), BM_NOT_SUPPORTED);
+    manager.opened_ = false;
 }
