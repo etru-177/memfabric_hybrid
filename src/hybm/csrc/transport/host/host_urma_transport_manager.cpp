@@ -29,6 +29,16 @@ constexpr int32_t HCOMM_E_AGAIN = 20; // Aligned with HCCL_E_AGAIN without depen
 constexpr uint32_t HCOMM_SUBMIT_MAX_RETRIES = 3U;
 constexpr const char *ENV_HOST_URMA_EID = "MF_HOST_URMA_EID";
 
+bool HasUrmaPrivateData(const TransportPrivateData &privateData)
+{
+    for (const auto value : privateData.key.keys) {
+        if (value != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct ParsedRemoteMemKey {
     uint64_t remoteAddr{0};
     UrmaExportDesc exportDesc{};
@@ -405,21 +415,30 @@ Result HostUrmaTransportManager::Prepare(const HybmTransPrepareOptions &options)
     for (const auto &[peerRank, peerInfo] : options.options) {
         auto &state = remoteRanks_[peerRank];
         bool isNew = (state.channel == 0);
-        if (isNew) {
-            UrmaEndpointDesc peerEndpoint{};
+        UrmaEndpointDesc peerEndpoint{};
+        const bool hasPrivateData = HasUrmaPrivateData(peerInfo.privateData);
+        if (isNew || hasPrivateData) {
             auto ret = urma::ParseUrmaPrivateData(peerInfo.privateData, peerEndpoint);
             if (ret != BM_OK) {
                 BM_LOG_ERROR("Failed to parse private data for peer " << peerRank);
-                remoteRanks_.erase(peerRank);
+                if (isNew) {
+                    remoteRanks_.erase(peerRank);
+                }
                 return ret;
             }
+        }
+        if (isNew) {
             state.endpointDesc = peerEndpoint;
-            ret = PreparePeerLocked(peerRank, peerInfo, state);
+            auto ret = PreparePeerLocked(peerRank, peerInfo, state);
             if (ret != BM_OK) {
                 remoteRanks_.erase(peerRank);
                 return ret;
             }
         } else {
+            if (hasPrivateData && std::memcmp(&state.endpointDesc, &peerEndpoint, sizeof(UrmaEndpointDesc)) != 0) {
+                BM_LOG_ERROR("Prepare: endpoint changed for existing peer " << peerRank);
+                return BM_NOT_SUPPORTED;
+            }
             auto ret = ValidateInitialPeerSetLocked(options, state);
             if (ret != BM_OK) {
                 return ret;
@@ -773,14 +792,22 @@ Result HostUrmaTransportManager::UpdateRankOptions(const HybmTransPrepareOptions
     bool needFallback = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!opened_) {
+            BM_LOG_ERROR("UpdateRankOptions: HostUrmaTransportManager not opened");
+            return BM_NOT_INITIALIZED;
+        }
         for (const auto &[peerRank, peerInfo] : options.options) {
+            if (peerRank >= rankCount_) {
+                BM_LOG_ERROR("UpdateRankOptions: invalid peer " << peerRank << " rankCount: " << rankCount_);
+                return BM_INVALID_PARAM;
+            }
             auto it = remoteRanks_.find(peerRank);
-            if (it == remoteRanks_.end()) {
+            if (it == remoteRanks_.end() || it->second.channel == 0) {
                 BM_LOG_WARN("UpdateRankOptions: peer " << peerRank << " not prepared yet, fallback to Prepare");
                 needFallback = true;
-                break;
+                continue;
             }
-            if (peerInfo.privateData.ip[0] != '\0') {
+            if (HasUrmaPrivateData(peerInfo.privateData)) {
                 UrmaEndpointDesc newDesc{};
                 auto ret = urma::ParseUrmaPrivateData(peerInfo.privateData, newDesc);
                 if (ret != BM_OK) {
@@ -791,8 +818,18 @@ Result HostUrmaTransportManager::UpdateRankOptions(const HybmTransPrepareOptions
                     return BM_NOT_SUPPORTED;
                 }
             }
-            if (!peerInfo.memKeys.empty()) {
-                needFallback = true;
+        }
+        if (!needFallback) {
+            for (const auto &[peerRank, peerInfo] : options.options) {
+                if (peerInfo.memKeys.empty()) {
+                    continue;
+                }
+                auto ret = PreparePeerMemoryKeysLocked(peerRank, peerInfo.memKeys, remoteRanks_.at(peerRank));
+                if (ret != BM_OK) {
+                    BM_LOG_ERROR("UpdateRankOptions: failed to update memory keys for peer " << peerRank
+                                                                                             << " ret: " << ret);
+                    return ret;
+                }
             }
         }
     }
