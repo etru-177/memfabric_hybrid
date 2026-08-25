@@ -42,7 +42,7 @@ def get_lib_path():
     return os.path.abspath(lib_path)
 
 
-from _pymf_transfer import TransferEngine, TransferOpcode, create_config_store
+from _pymf_transfer import TransferEngine, TransferOpcode, TransDataOpType, create_config_store
 from _pymf_hybrid import (
     bm,
     shm,
@@ -66,6 +66,7 @@ offload.group_pack_copy = group_pack_copy
 __all__ = [
     'TransferEngine',
     'TransferOpcode',
+    'TransDataOpType',
     'create_config_store',
     'bm',
     'shm',
