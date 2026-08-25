@@ -121,6 +121,7 @@ public:
         aivIndex_ = AscendC::GetBlockIdx();
 
         size_ = *(reinterpret_cast<__gm__ uint32_t *>(size));
+        half_ = size_ >> 1;
         inputs_ = reinterpret_cast<__gm__ uint64_t *>(inputs);
         outputs_ = reinterpret_cast<__gm__ uint64_t *>(outputs);
         lens_ = reinterpret_cast<__gm__ uint32_t *>(lens);
@@ -130,15 +131,15 @@ public:
 
     HYBM_AICORE_KERNEL void Process()
     {
-        uint32_t entry;
-        EntryCtx cur;
-        if (!FirstEntry(entry, cur)) {
+        uint32_t group;
+        GroupCtx cur;
+        if (!FirstGroup(group, cur)) {
             return;
         }
         CopyIn(cur);
         while (true) {
-            EntryCtx next;
-            bool hasNext = NextEntry(entry, next);
+            GroupCtx next;
+            bool hasNext = NextGroup(group, next);
             if (hasNext) {
                 CopyIn(next);
             }
@@ -152,60 +153,77 @@ public:
     }
 
 private:
-    struct EntryCtx {
-        uint64_t src = 0;
-        uint64_t dst = 0;
-        uint32_t bytes = 0;
+    struct GroupCtx {
+        uint64_t kSrc = 0;
+        uint64_t kDst = 0;
+        uint32_t kBytes = 0;
+        uint64_t vSrc = 0;
+        uint64_t vDst = 0;
+        uint32_t vBytes = 0;
     };
 
-    HYBM_AICORE_KERNEL bool LoadEntry(uint32_t entry, EntryCtx &ctx)
+    HYBM_AICORE_KERNEL bool LoadGroup(uint32_t group, GroupCtx &ctx)
     {
-        ctx.src = inputs_[entry];
-        ctx.dst = outputs_[entry];
-        ctx.bytes = lens_[entry] * static_cast<uint32_t>(sizeof(T));
-        return ctx.bytes > 0;
+        uint32_t vIdx = group + half_;
+        ctx.kSrc = inputs_[group];
+        ctx.kDst = outputs_[group];
+        ctx.kBytes = lens_[group] * static_cast<uint32_t>(sizeof(T));
+        ctx.vSrc = inputs_[vIdx];
+        ctx.vDst = outputs_[vIdx];
+        ctx.vBytes = lens_[vIdx] * static_cast<uint32_t>(sizeof(T));
+        return (ctx.kBytes + ctx.vBytes) > 0;
     }
 
-    HYBM_AICORE_KERNEL bool FirstEntry(uint32_t &entry, EntryCtx &ctx)
+    HYBM_AICORE_KERNEL bool FirstGroup(uint32_t &group, GroupCtx &ctx)
     {
-        entry = aivIndex_;
-        if (entry >= size_) {
+        group = aivIndex_;
+        if (group >= half_) {
             return false;
         }
-        if (LoadEntry(entry, ctx)) {
+        if (LoadGroup(group, ctx)) {
             return true;
         }
-        return NextEntry(entry, ctx);
+        return NextGroup(group, ctx);
     }
 
-    HYBM_AICORE_KERNEL bool NextEntry(uint32_t &entry, EntryCtx &ctx)
+    HYBM_AICORE_KERNEL bool NextGroup(uint32_t &group, GroupCtx &ctx)
     {
-        while ((entry += aivNum_) < size_) {
-            if (LoadEntry(entry, ctx)) {
+        while ((group += aivNum_) < half_) {
+            if (LoadGroup(group, ctx)) {
                 return true;
             }
         }
         return false;
     }
 
-    HYBM_AICORE_KERNEL void CopyIn(const EntryCtx &ctx)
+    HYBM_AICORE_KERNEL void CopyIn(const GroupCtx &ctx)
     {
         AscendC::LocalTensor<T> local = bindQueue_.AllocTensor<T>();
-        AscendC::GlobalTensor<T> srcGm;
-        srcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.src), ctx.bytes / static_cast<uint32_t>(sizeof(T)));
-        AscendC::DataCopyExtParams copyParams(1, ctx.bytes, 0, 0, 0);
         AscendC::DataCopyPadExtParams<T> padParams{};
-        AscendC::DataCopyPad(local, srcGm, copyParams, padParams);
+        AscendC::GlobalTensor<T> kGm;
+        kGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.kSrc), ctx.kBytes / static_cast<uint32_t>(sizeof(T)));
+        AscendC::DataCopyExtParams kParams(1, ctx.kBytes, 0, 0, 0);
+        AscendC::DataCopyPad(local, kGm, kParams, padParams);
+        uint32_t kElems = ctx.kBytes / static_cast<uint32_t>(sizeof(T));
+        AscendC::GlobalTensor<T> vGm;
+        vGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.vSrc), ctx.vBytes / static_cast<uint32_t>(sizeof(T)));
+        AscendC::DataCopyExtParams vParams(1, ctx.vBytes, 0, 0, 0);
+        AscendC::DataCopyPad(local[kElems], vGm, vParams, padParams);
         bindQueue_.EnQue(local);
     }
 
-    HYBM_AICORE_KERNEL void CopyOut(const EntryCtx &ctx)
+    HYBM_AICORE_KERNEL void CopyOut(const GroupCtx &ctx)
     {
         AscendC::LocalTensor<T> local = bindQueue_.DeQue<T>();
-        AscendC::GlobalTensor<T> dstGm;
-        dstGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.dst), ctx.bytes / static_cast<uint32_t>(sizeof(T)));
-        AscendC::DataCopyExtParams copyParams(1, ctx.bytes, 0, 0, 0);
-        AscendC::DataCopyPad(dstGm, local, copyParams);
+        AscendC::GlobalTensor<T> kGm;
+        kGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.kDst), ctx.kBytes / static_cast<uint32_t>(sizeof(T)));
+        AscendC::DataCopyExtParams kParams(1, ctx.kBytes, 0, 0, 0);
+        AscendC::DataCopyPad(kGm, local, kParams);
+        uint32_t kElems = ctx.kBytes / static_cast<uint32_t>(sizeof(T));
+        AscendC::GlobalTensor<T> vGm;
+        vGm.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(ctx.vDst), ctx.vBytes / static_cast<uint32_t>(sizeof(T)));
+        AscendC::DataCopyExtParams vParams(1, ctx.vBytes, 0, 0, 0);
+        AscendC::DataCopyPad(vGm, local[kElems], vParams);
         bindQueue_.FreeTensor(local);
     }
 
@@ -215,6 +233,7 @@ private:
     uint32_t aivIndex_;
     uint32_t aivNum_;
     uint32_t size_;
+    uint32_t half_;
     __gm__ uint64_t *inputs_;
     __gm__ uint64_t *outputs_;
     __gm__ uint32_t *lens_;

@@ -65,16 +65,17 @@ def _rank_main(rank_id: int, device_id: int, world_size: int, port: int, sync: m
         'len': {'keys': [], 'values': []},
     }
 
+    elem_type = torch.bfloat16
     tokens = 4 * 2048  # batch * tokens_per_req
     for _ in range(tokens):
         if rank_id == 0:
-            cpu_key = offload.empty([K_DIM, 1], dtype=torch.bfloat16).zero_()
-            cpu_value = offload.empty([V_DIM, 1], dtype=torch.bfloat16).zero_()
+            cpu_key = offload.empty([K_DIM, 1], dtype=elem_type).zero_()
+            cpu_value = offload.empty([V_DIM, 1], dtype=elem_type).zero_()
         else:
-            cpu_key = torch.ones([K_DIM, 1], dtype=torch.bfloat16)
-            cpu_value = torch.ones([V_DIM, 1], dtype=torch.bfloat16)
-        npu_key = torch.ones(K_DIM, dtype=torch.bfloat16).npu()
-        npu_value = torch.ones(V_DIM, dtype=torch.bfloat16).npu()
+            cpu_key = torch.ones([K_DIM, 1], dtype=elem_type)
+            cpu_value = torch.ones([V_DIM, 1], dtype=elem_type)
+        npu_key = torch.ones(K_DIM, dtype=elem_type).npu()
+        npu_value = torch.ones(V_DIM, dtype=elem_type).npu()
 
         data['cpu']['keys'].append(cpu_key)
         data['cpu']['values'].append(cpu_value)
@@ -86,8 +87,8 @@ def _rank_main(rank_id: int, device_id: int, world_size: int, port: int, sync: m
         data['npu']['key_ptrs'].append(npu_key.data_ptr())
         data['npu']['value_ptrs'].append(npu_value.data_ptr())
 
-        data['len']['keys'].append(cpu_key.numel() * torch.bfloat16.itemsize)
-        data['len']['values'].append(cpu_value.numel() * torch.bfloat16.itemsize)
+        data['len']['keys'].append(cpu_key.numel() * elem_type.itemsize)
+        data['len']['values'].append(cpu_value.numel() * elem_type.itemsize)
 
     size = len(data['cpu']['key_ptrs'] + data['cpu']['value_ptrs'])
     src_ptrs = torch.tensor(data['cpu']['key_ptrs'] + data['cpu']['value_ptrs'], dtype=torch.int64).npu()

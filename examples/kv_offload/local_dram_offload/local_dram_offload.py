@@ -16,6 +16,7 @@ import multiprocessing as mp
 import os.path
 
 import torch
+import torch.distributed as dist
 import torch_npu
 import memfabric_hybrid as mf
 from memfabric_hybrid import offload
@@ -42,9 +43,10 @@ FALLBACK_MAX_WORLD_SIZE = 8
 K_DIM = 512
 V_DIM = 64
 WARMUP_ITERS = 5
+DEFAULT_PORT = 23456
 
 
-def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
+def _rank_main(rank_id: int, device_id: int, world_size: int, port: int, sync: mp.Barrier):
     mf.set_log_level(3)
     torch.npu.set_device(device_id)
 
@@ -60,12 +62,13 @@ def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
         'len': {'keys': [], 'values': []},
     }
 
+    elem_type = torch.bfloat16
     tokens = 4 * 2048  # batch * tokens_per_req
     for _ in range(tokens):
-        cpu_key = offload.empty([K_DIM, 1], dtype=torch.bfloat16).zero_()
-        cpu_value = offload.empty([V_DIM, 1], dtype=torch.bfloat16).zero_()
-        npu_key = torch.ones(K_DIM, dtype=torch.bfloat16).npu()
-        npu_value = torch.ones(V_DIM, dtype=torch.bfloat16).npu()
+        cpu_key = offload.empty([K_DIM, 1], dtype=elem_type).zero_()
+        cpu_value = offload.empty([V_DIM, 1], dtype=elem_type).zero_()
+        npu_key = torch.ones(K_DIM, dtype=elem_type).npu()
+        npu_value = torch.ones(V_DIM, dtype=elem_type).npu()
 
         data['cpu']['keys'].append(cpu_key)
         data['cpu']['values'].append(cpu_value)
@@ -77,8 +80,8 @@ def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
         data['npu']['key_ptrs'].append(npu_key.data_ptr())
         data['npu']['value_ptrs'].append(npu_value.data_ptr())
 
-        data['len']['keys'].append(cpu_key.numel() * torch.bfloat16.itemsize)
-        data['len']['values'].append(cpu_value.numel() * torch.bfloat16.itemsize)
+        data['len']['keys'].append(cpu_key.numel() * elem_type.itemsize)
+        data['len']['values'].append(cpu_value.numel() * elem_type.itemsize)
 
     size = len(data['cpu']['key_ptrs'] + data['cpu']['value_ptrs'])
     src_ptrs = torch.tensor(data['cpu']['key_ptrs'] + data['cpu']['value_ptrs'], dtype=torch.int64).npu()
@@ -88,6 +91,9 @@ def _rank_main(rank_id: int, device_id: int, sync: mp.Barrier):
     device = data['npu']['keys'][0].device
 
     total_bytes = sum(data['len']['keys']) + sum(data['len']['values'])
+
+    group = dist.init_process_group("hccl", init_method=f'tcp://127.0.0.1:{port}', rank=rank_id, world_size=world_size)
+    dist.barrier()
 
     def copy_fn():
         assert offload.sparse_copy(src_ptrs, dst_ptrs, len_ptrs, size_ptr, device) == 0, "offload.sparse_copy failed"
@@ -126,32 +132,40 @@ def _detect_chip_type() -> str:
     return ""
 
 
-def _parse_world_size() -> int:
-    parser = argparse.ArgumentParser(description="local_dram_offload: per-rank local DRAM KV offload")
+def _parse_world_size() -> tuple:
+    parser = argparse.ArgumentParser(description="shared_dram_offload: shared DRAM pool KV offload")
     parser.add_argument(
         "--world_size",
         type=int,
         default=DEFAULT_WORLD_SIZE,
-        help=f"number of ranks, range [1, chip max] (default: {DEFAULT_WORLD_SIZE})",
+        help=f"number of ranks, power of 2 in [2, chip max] (default: {DEFAULT_WORLD_SIZE})",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"TCP port for hccl rendezvous (default: {DEFAULT_PORT})",
     )
     args = parser.parse_args()
 
     chip_type = _detect_chip_type()
     chip_max = CHIP_MAX_WORLD_SIZE.get(chip_type, FALLBACK_MAX_WORLD_SIZE)
-    if not 1 <= args.world_size <= chip_max:
-        raise ValueError(f"world_size={args.world_size} out of range [1, {chip_max}] on chip {chip_type or 'unknown'}")
-    return args.world_size
+    if args.world_size < 2 or args.world_size > chip_max or (args.world_size & (args.world_size - 1)) != 0:
+        raise ValueError(
+            f"world_size={args.world_size} must be a power of 2 in [2, {chip_max}] on chip {chip_type or 'unknown'}"
+        )
+    return args.world_size, args.port
 
 
 def main():
-    world_size = _parse_world_size()
+    world_size, port = _parse_world_size()
 
     mp.set_start_method("spawn", force=True)
     sync = mp.Barrier(world_size)
 
     procs = []
     for rank_id in range(world_size):
-        p = mp.Process(target=_rank_main, args=(rank_id, rank_id, sync))
+        p = mp.Process(target=_rank_main, args=(rank_id, rank_id, world_size, port, sync))
         procs.append(p)
         p.start()
 

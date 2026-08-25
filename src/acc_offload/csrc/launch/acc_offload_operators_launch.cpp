@@ -21,7 +21,7 @@ void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtr
 #if defined(ACC_SOC_VERSION_A5)
     constexpr uint32_t blockDim = 64;
 #else
-    constexpr uint32_t blockDim = 32;
+    constexpr uint32_t blockDim = 48;
 #endif
     c10_npu::OptionalNPUGuard npuGuard;
     npuGuard.set_index(devIdx);
