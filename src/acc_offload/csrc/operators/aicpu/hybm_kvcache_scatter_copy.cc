@@ -11,7 +11,8 @@
  */
 #include "hybm_kvcache_scatter_copy.h"
 
-#include <array>
+#include <new>
+#include <vector>
 
 #include "hybm_batch_copy.h"
 #include "hybm_def.h"
@@ -26,13 +27,33 @@ constexpr uint64_t kCkvTokenBytes = 1024U;
 constexpr uint64_t kCkvLayerBytes = kTokensPerBlock * kCkvTokenBytes;
 constexpr uint64_t kLayerStrideBytes = kTokensPerBlock * (kCkvTokenBytes + kKpeTokenBytes);
 constexpr uint64_t kCopyCapacity = 16384U;
-constexpr uint32_t kDescriptorCapacity = 128U;
+// 与HybmBatchCopy完成轮次保持一致；每轮完成后再复用SQ，兼顾大批量性能和队列安全。
+constexpr uint32_t kDescriptorCapacity = kHybmBatchCopyMaxRoundDescriptors;
 
 struct DescriptorBatch {
-    std::array<void *, kDescriptorCapacity> destinations{};
-    std::array<void *, kDescriptorCapacity> sources{};
-    std::array<uint64_t, kDescriptorCapacity> lengths{};
-    uint32_t count{0U};
+    std::vector<void *> destinations;
+    std::vector<void *> sources;
+    std::vector<uint64_t> lengths;
+
+    DescriptorBatch()
+    {
+        // 复用堆上缓冲，避免增大批量后占用过多AICPU栈空间。
+        destinations.reserve(kDescriptorCapacity);
+        sources.reserve(kDescriptorCapacity);
+        lengths.reserve(kDescriptorCapacity);
+    }
+
+    uint32_t Count() const
+    {
+        return static_cast<uint32_t>(lengths.size());
+    }
+
+    void Clear()
+    {
+        destinations.clear();
+        sources.clear();
+        lengths.clear();
+    }
 };
 
 struct CopyAddress {
@@ -102,25 +123,24 @@ int32_t CalculateCopyAddress(const HybmKvcacheScatterCopyParam &param, uint64_t 
 
 void AppendDescriptor(DescriptorBatch &batch, void *destination, void *source, uint64_t length)
 {
-    batch.destinations[batch.count] = destination;
-    batch.sources[batch.count] = source;
-    batch.lengths[batch.count] = length;
-    ++batch.count;
+    batch.destinations.push_back(destination);
+    batch.sources.push_back(source);
+    batch.lengths.push_back(length);
 }
 
 int32_t SubmitBatch(DescriptorBatch &batch)
 {
-    if (batch.count == 0U) {
+    if (batch.Count() == 0U) {
         return BM_OK;
     }
-    HybmBatchCopyParam copyParam{batch.count, batch.destinations.data(), batch.sources.data(), batch.lengths.data()};
+    HybmBatchCopyParam copyParam{batch.Count(), batch.destinations.data(), batch.sources.data(), batch.lengths.data()};
     (void)copyParam;
     const auto ret = static_cast<int32_t>(HybmBatchCopy(&copyParam));
     if (ret != BM_OK) {
-        HYBM_LOGE(ret, "HybmBatchCopy failed for KvcacheScatterCopy, descriptorCount=%u ret=%d", batch.count, ret);
+        HYBM_LOGE(ret, "HybmBatchCopy failed for KvcacheScatterCopy, descriptorCount=%u ret=%d", batch.Count(), ret);
         return ret;
     }
-    batch.count = 0U;
+    batch.Clear();
     return BM_OK;
 }
 
@@ -140,7 +160,7 @@ int32_t CopyBatch(const HybmKvcacheScatterCopyParam &param, uint64_t batchIndex,
         }
         AppendDescriptor(descriptors, address.ckvDst, address.ckvSrc, kCkvTokenBytes);
         AppendDescriptor(descriptors, address.kpeDst, address.kpeSrc, kKpeTokenBytes);
-        if (descriptors.count == kDescriptorCapacity && (ret = SubmitBatch(descriptors)) != BM_OK) {
+        if (descriptors.Count() == kDescriptorCapacity && (ret = SubmitBatch(descriptors)) != BM_OK) {
             return ret;
         }
     }
@@ -149,14 +169,22 @@ int32_t CopyBatch(const HybmKvcacheScatterCopyParam &param, uint64_t batchIndex,
 
 int32_t RunScatterCopy(const HybmKvcacheScatterCopyParam &param)
 {
-    DescriptorBatch descriptors{};
-    for (uint64_t batch = 0U; batch < param.batchSize; ++batch) {
-        const auto ret = CopyBatch(param, batch, descriptors);
-        if (ret != BM_OK) {
-            return ret;
+    try {
+        DescriptorBatch descriptors{};
+        for (uint64_t batch = 0U; batch < param.batchSize; ++batch) {
+            const auto ret = CopyBatch(param, batch, descriptors);
+            if (ret != BM_OK) {
+                return ret;
+            }
         }
+        return SubmitBatch(descriptors);
+    } catch (const std::bad_alloc &) {
+        HYBM_LOGE(BM_MALLOC_FAILED, "allocate KvcacheScatterCopy descriptor batch failed");
+        return BM_MALLOC_FAILED;
+    } catch (...) {
+        HYBM_LOGE(BM_ERROR, "unexpected exception while building KvcacheScatterCopy descriptors");
+        return BM_ERROR;
     }
-    return SubmitBatch(descriptors);
 }
 } // namespace
 
