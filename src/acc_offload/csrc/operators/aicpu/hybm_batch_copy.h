@@ -16,6 +16,9 @@
 #include <cstddef>
 #include <cstdint>
 
+// 单个完成轮次预留一半SQ空间，避免数据WQE和末尾完成标志WQE在执行前覆盖尚未消费的队列项。
+constexpr uint32_t kHybmBatchCopyMaxRoundDescriptors = 16000U;
+
 struct HybmBatchCopyParam {
     uint32_t list_num;
     void **dst_buf_addr_list;

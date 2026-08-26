@@ -36,14 +36,10 @@ struct BatchCopyGroup {
     std::vector<void *> destinations;
     std::vector<void *> sources;
     std::vector<uint64_t> lengths;
-
-    bool Empty() const
-    {
-        return lengths.empty();
-    }
 };
 
 using BatchCopyGroups = std::array<BatchCopyGroup, ock::mf::BATCH_COPY_MAX_PEER_COUNT>;
+using BatchCopyRoundState = std::array<uint32_t, ock::mf::BATCH_COPY_MAX_PEER_COUNT>;
 
 void InvalidateDeviceCache(uintptr_t address)
 {
@@ -284,10 +280,10 @@ volatile uint64_t *GetCompletionCell(uint16_t peerIndex)
     return reinterpret_cast<volatile uint64_t *>(kCompletionAddress + peerIndex * sizeof(uint64_t));
 }
 
-void ClearUsedCompletionCells(const BatchCopyGroups &groups, uint16_t peerCount)
+void ClearUsedCompletionCells(const BatchCopyRoundState &roundCounts, uint16_t peerCount)
 {
     for (uint16_t peerIndex = 0U; peerIndex < peerCount; ++peerIndex) {
-        if (groups[peerIndex].Empty()) {
+        if (roundCounts[peerIndex] == 0U) {
             continue;
         }
         auto *cell = GetCompletionCell(peerIndex);
@@ -297,38 +293,42 @@ void ClearUsedCompletionCells(const BatchCopyGroups &groups, uint16_t peerCount)
     DeviceMemoryBarrier();
 }
 
-int32_t SubmitPeerGroups(const BatchCopyRouteTable *route, BatchCopyGroups &groups)
+int32_t SubmitPeerGroups(const BatchCopyRouteTable *route, BatchCopyGroups &groups,
+                         const BatchCopyRoundState &offsets, const BatchCopyRoundState &roundCounts)
 {
     for (uint16_t peerIndex = 0U; peerIndex < route->header.peerCount; ++peerIndex) {
         auto &group = groups[peerIndex];
-        if (group.Empty()) {
+        const uint32_t count = roundCounts[peerIndex];
+        if (count == 0U) {
             continue;
         }
+        const uint32_t offset = offsets[peerIndex];
         const auto &peer = route->peers[peerIndex];
         HybmOneSideOpParam oneSide{};
         oneSide.thread = peer.thread;
         oneSide.channel = peer.channel;
-        oneSide.list_num = static_cast<uint32_t>(group.lengths.size());
-        oneSide.dst_buf_addr_list = group.destinations.data();
-        oneSide.src_buf_addr_list = group.sources.data();
-        oneSide.len_list = group.lengths.data();
+        oneSide.list_num = count;
+        oneSide.dst_buf_addr_list = group.destinations.data() + offset;
+        oneSide.src_buf_addr_list = group.sources.data() + offset;
+        oneSide.len_list = group.lengths.data() + offset;
         oneSide.remote_flag_addr = peer.remoteFlagAddr;
         oneSide.local_flag_addr = reinterpret_cast<uint64_t>(GetCompletionCell(peerIndex));
         oneSide.flag_size = sizeof(uint64_t);
         const auto ret = static_cast<int32_t>(HybmBatchRead(&oneSide));
         if (ret != BM_OK) {
-            HYBM_LOGE(ret, "HybmBatchRead failed for BatchCopy peer, peerIndex=%u itemCount=%zu", peerIndex,
-                      group.lengths.size());
+            HYBM_LOGE(ret,
+                      "HybmBatchRead failed for BatchCopy peer, peerIndex=%u offset=%u itemCount=%u", peerIndex,
+                      offset, count);
             return ret;
         }
     }
     return BM_OK;
 }
 
-bool AllUsedPeersCompleted(const BatchCopyGroups &groups, uint16_t peerCount)
+bool AllUsedPeersCompleted(const BatchCopyRoundState &roundCounts, uint16_t peerCount)
 {
     for (uint16_t peerIndex = 0U; peerIndex < peerCount; ++peerIndex) {
-        if (groups[peerIndex].Empty()) {
+        if (roundCounts[peerIndex] == 0U) {
             continue;
         }
         auto *cell = GetCompletionCell(peerIndex);
@@ -340,11 +340,11 @@ bool AllUsedPeersCompleted(const BatchCopyGroups &groups, uint16_t peerCount)
     return true;
 }
 
-int32_t WaitForPeerCompletions(const BatchCopyGroups &groups, uint16_t peerCount)
+int32_t WaitForPeerCompletions(const BatchCopyRoundState &roundCounts, uint16_t peerCount)
 {
     const auto deadline = std::chrono::steady_clock::now() + kCompletionTimeout;
     uint32_t spins = 0U;
-    while (!AllUsedPeersCompleted(groups, peerCount)) {
+    while (!AllUsedPeersCompleted(roundCounts, peerCount)) {
         if (std::chrono::steady_clock::now() >= deadline) {
             HYBM_LOGE(BM_TIMEOUT, "BatchCopy completion timed out, peerCount=%u", peerCount);
             return BM_TIMEOUT;
@@ -354,6 +354,41 @@ int32_t WaitForPeerCompletions(const BatchCopyGroups &groups, uint16_t peerCount
         }
     }
     DeviceMemoryBarrier();
+    return BM_OK;
+}
+
+bool PrepareNextRound(const BatchCopyGroups &groups, uint16_t peerCount, const BatchCopyRoundState &offsets,
+                      BatchCopyRoundState &roundCounts)
+{
+    bool hasWork = false;
+    for (uint16_t peerIndex = 0U; peerIndex < peerCount; ++peerIndex) {
+        const auto total = static_cast<uint32_t>(groups[peerIndex].lengths.size());
+        const uint32_t remaining = total - offsets[peerIndex];
+        roundCounts[peerIndex] = std::min(remaining, kHybmBatchCopyMaxRoundDescriptors);
+        hasWork = hasWork || roundCounts[peerIndex] != 0U;
+    }
+    return hasWork;
+}
+
+int32_t SubmitInCompletionRounds(const BatchCopyRouteTable *route, BatchCopyGroups &groups)
+{
+    BatchCopyRoundState offsets{};
+    BatchCopyRoundState roundCounts{};
+    while (PrepareNextRound(groups, route->header.peerCount, offsets, roundCounts)) {
+        // 只有完成标志回到本端后才进入下一轮，确保上一轮WQE已执行并释放SQ空间。
+        ClearUsedCompletionCells(roundCounts, route->header.peerCount);
+        auto ret = SubmitPeerGroups(route, groups, offsets, roundCounts);
+        if (ret != BM_OK) {
+            return ret;
+        }
+        ret = WaitForPeerCompletions(roundCounts, route->header.peerCount);
+        if (ret != BM_OK) {
+            return ret;
+        }
+        for (uint16_t peerIndex = 0U; peerIndex < route->header.peerCount; ++peerIndex) {
+            offsets[peerIndex] += roundCounts[peerIndex];
+        }
+    }
     return BM_OK;
 }
 
@@ -373,9 +408,7 @@ int32_t ExecuteBatchCopy(HybmBatchCopyParam *param)
     if (ret != BM_OK) {
         return ret;
     }
-    ClearUsedCompletionCells(groups, route->header.peerCount);
-    ret = SubmitPeerGroups(route, groups);
-    return ret == BM_OK ? WaitForPeerCompletions(groups, route->header.peerCount) : ret;
+    return SubmitInCompletionRounds(route, groups);
 }
 } // namespace
 
