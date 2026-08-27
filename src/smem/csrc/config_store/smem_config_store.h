@@ -201,7 +201,7 @@ public:
      * @param wid          [out] Unique ID of the watch event.
      * @return 0 if successfully done
      */
-    virtual Result Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t)> &notify,
+    virtual Result Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t, Result)> &notify,
                          uint32_t &wid) noexcept = 0;
 
     /**

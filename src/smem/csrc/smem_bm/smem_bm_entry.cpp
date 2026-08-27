@@ -271,8 +271,8 @@ Result SmemBmEntry::GroupOpBarrier(int32_t input, std::string logTag)
 Result SmemBmEntry::JoinHandle(uint32_t rk)
 {
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
-    SM_LOG_INFO("do join func, local_rk: " << options_.rank << " receive_rk: " << rk
-                                           << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_TRACE("do join func, local_rk: " << options_.rank << " receive_rk: " << rk
+                                            << ", rank size is: " << globalGroup_->GetRankSize());
 
     uint32_t unitSize = sizeof(hybm_exchange_info);
     std::string localInfo;
@@ -362,8 +362,8 @@ rollback_exit:
 Result SmemBmEntry::UpdateHandle(uint32_t rk)
 {
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);
-    SM_LOG_INFO("do update func, local_rk: " << options_.rank << " receive_rk: " << rk
-                                             << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_TRACE("do update func, local_rk: " << options_.rank << " receive_rk: " << rk
+                                              << ", rank size is: " << globalGroup_->GetRankSize());
 
     uint32_t unitSize = sizeof(hybm_exchange_info);
     std::string xinfo;
@@ -412,9 +412,9 @@ update_exit:
 
 Result SmemBmEntry::LeaveHandle(uint32_t rk)
 {
-    SM_LOG_INFO("do leave func, receive_rk: " << rk);
+    SM_LOG_TRACE("do leave func, receive_rk: " << rk);
     if (!inited_) {
-        SM_LOG_INFO("bm not inited, skip leave");
+        SM_LOG_TRACE("bm not inited, skip leave");
         return SM_NOT_INITIALIZED;
     }
     SM_ASSERT_RETURN(inited_, SM_NOT_INITIALIZED);

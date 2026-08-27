@@ -102,8 +102,8 @@ Result ComposeTransportManager::OpenDevice(const TransportOptions &options)
         ss << DEVICE_TRANSPORT_TYPE << deviceTransportManager_->GetNic() << NIC_DELIMITER;
     }
     nicInfo_ = ss.str();
-    BM_LOG_INFO("Success to open device rankId:" << options_.rankId << " protocol:" << options_.protocol
-                                                 << " nic:" << nicInfo_);
+    BM_LOG_TRACE("Success to open device rankId:" << options_.rankId << " protocol:" << options_.protocol
+                                                  << " nic:" << nicInfo_);
     return BM_OK;
 }
 

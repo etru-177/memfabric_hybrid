@@ -109,7 +109,7 @@ SMEM_API int32_t smem_bm_init(const char *storeURL, uint32_t worldSize, uint16_t
     }
 
     g_smemBmInited = true;
-    SM_LOG_INFO("smem_bm_init success. " << " config_ip: " << storeURL);
+    SM_LOG_TRACE("smem_bm_init success. " << " config_ip: " << storeURL);
     return SM_OK;
 }
 
@@ -129,7 +129,7 @@ SMEM_API void smem_bm_uninit(uint32_t flags)
     SmemBmEntryManager::Instance().Destroy();
     hybm_uninit();
     g_smemBmInited = false;
-    SM_LOG_INFO("smem_bm_uninit finished");
+    SM_LOG_TRACE("smem_bm_uninit finished");
 }
 
 SMEM_API uint32_t smem_bm_get_rank_id()

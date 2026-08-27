@@ -113,7 +113,7 @@ inline void AccTcpLinkDelayCleanup::RunInThread(std::atomic<bool> *started)
     pthread_setname_np(pthread_self(), "AccDelayClean");
     started->store(true);
 
-    LOG_INFO("AccDelay cleanup thread thread started");
+    LOG_TRACE("AccDelay cleanup thread thread started");
 
     AccTcpLinkCleanupItem item;
     bool stop = false;

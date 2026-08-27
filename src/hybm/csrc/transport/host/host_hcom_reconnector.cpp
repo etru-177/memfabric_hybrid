@@ -104,7 +104,7 @@ Result HcomReconnector::AddReconnectTask(uint32_t rankId, const std::string &nic
 void HcomReconnector::ReconnectLoop() noexcept
 {
     pthread_setname_np(pthread_self(), "host_re_conn");
-    BM_LOG_INFO("start thread for host_re_conn");
+    BM_LOG_TRACE("start thread for host_re_conn");
     while (started_) {
         std::unique_lock<std::mutex> locker{loopWaitMutex_};
         loopWaitCond_.wait_for(locker, std::chrono::milliseconds(minWaitMs_), [this]() { return !started_.load(); });
@@ -115,7 +115,7 @@ void HcomReconnector::ReconnectLoop() noexcept
         }
         ReconnectTimeoutTasks();
     }
-    BM_LOG_INFO("end thread for host_re_conn");
+    BM_LOG_TRACE("end thread for host_re_conn");
 }
 
 void HcomReconnector::ReconnectTimeoutTasks() noexcept
@@ -143,7 +143,7 @@ void HcomReconnector::ReconnectTimeoutTasks() noexcept
     for (auto &task : timeoutTasks) {
         auto res = reconnFunc_(task.rankId, task.nic);
         if (res == BM_OK) {
-            BM_LOG_INFO("reconnect for rank id: " << task.rankId << " success.");
+            BM_LOG_TRACE("reconnect for rank id: " << task.rankId << " success.");
         } else {
             BM_LOG_DEBUG("reconnect for rank id: " << task.rankId << " failed:" << res);
             failedTasks.emplace_back(std::move(task));

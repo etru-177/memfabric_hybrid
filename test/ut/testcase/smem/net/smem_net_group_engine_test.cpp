@@ -89,7 +89,7 @@ public:
     }
 
     ock::smem::Result Watch(ock::smem::WatchRankType type,
-                            const std::function<void(ock::smem::WatchRankType, uint32_t)> &notify,
+                            const std::function<void(ock::smem::WatchRankType, uint32_t, ock::smem::Result)> &notify,
                             uint32_t &wid) noexcept override
     {
         watchRankCount++;

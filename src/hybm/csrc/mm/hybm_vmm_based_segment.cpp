@@ -234,9 +234,9 @@ Result HybmVmmBasedSegment::MallocEmptySlice(MemSlicePtr &slice) noexcept
         BM_LOG_ERROR("export info failed: " << ret);
         return BM_ERROR;
     }
-    BM_LOG_INFO("Success to export vmm segment info rank:"
-                << info.rankId << " superPodId:" << info.superPodId << " serverId:" << info.serverId
-                << " devId:" << info.devicePhyId << " segType:" << options_.segType << " size:" << info.size);
+    BM_LOG_TRACE("Success to export vmm segment info rank:"
+                 << info.rankId << " superPodId:" << info.superPodId << " serverId:" << info.serverId
+                 << " devId:" << info.devicePhyId << " segType:" << options_.segType << " size:" << info.size);
     exportMap_[slice->index_] = exInfo;
     return BM_OK;
 }
@@ -473,9 +473,9 @@ Result HybmVmmBasedSegment::ExportInner(const MemSlicePtr &slice, MemShareHandle
         return BM_ERROR;
     }
 
-    BM_LOG_INFO("Success to export vmm segment info rank:"
-                << info.rankId << " superPodId:" << info.superPodId << " serverId:" << info.serverId
-                << " devId:" << info.devicePhyId << " segType:" << options_.segType << " size:" << info.size);
+    BM_LOG_TRACE("Success to export vmm segment info rank:"
+                 << info.rankId << " superPodId:" << info.superPodId << " serverId:" << info.serverId
+                 << " devId:" << info.devicePhyId << " segType:" << options_.segType << " size:" << info.size);
     exportMap_[slice->index_] = exInfo;
     sHandle = info.shareHandle;
     return BM_OK;
@@ -543,9 +543,9 @@ Result HybmVmmBasedSegment::Import(const std::vector<std::string> &allExInfo, vo
             continue;
         }
         deserializedInfos.emplace_back(info);
-        BM_LOG_INFO("Success to import rank:" << info.rankId << " superPodId:" << info.superPodId
-                                              << " serverId:" << info.serverId << " devId:" << info.devicePhyId
-                                              << " segType:" << options_.segType << " size:" << info.size);
+        BM_LOG_TRACE("Success to import rank:" << info.rankId << " superPodId:" << info.superPodId
+                                               << " serverId:" << info.serverId << " devId:" << info.devicePhyId
+                                               << " segType:" << options_.segType << " size:" << info.size);
     }
 
     try {

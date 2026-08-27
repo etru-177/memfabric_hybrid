@@ -133,7 +133,7 @@ void AccTcpListener::Stop(bool afterFork) noexcept
 void AccTcpListener::RunInThread() noexcept
 {
     pthread_setname_np(pthread_self(), threadName_.c_str());
-    LOG_INFO("Acc listener accept thread for " << NameAndPort() << " start ...");
+    LOG_TRACE("Acc listener accept thread for " << NameAndPort() << " start ...");
     threadStarted_.store(true);
 
     while (!needStop_) {
@@ -179,7 +179,7 @@ void AccTcpListener::RunInThread() noexcept
         }
     }
 
-    LOG_INFO("Working thread for AccTcpStore listener at " << NameAndPort() << " exiting");
+    LOG_TRACE("Working thread for AccTcpStore listener at " << NameAndPort() << " exiting");
 }
 
 void AccTcpListener::ProcessNewConnection(int fd, struct sockaddr_in addressIn) noexcept
@@ -207,7 +207,7 @@ void AccTcpListener::ProcessNewConnection(int fd, struct sockaddr_in addressIn) 
         }
     }
 
-    LOG_INFO("Connected from " << ipPort << " successfully, ssl " << (enableTls_ ? "enable" : "disable"));
+    LOG_TRACE("Connected from " << ipPort << " successfully, ssl " << (enableTls_ ? "enable" : "disable"));
     AccTcpLinkDefaultPtr newLink;
     if (linkFactory_) {
         newLink = linkFactory_(fd, ipPort, ssl);

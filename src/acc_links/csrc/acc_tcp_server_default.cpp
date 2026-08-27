@@ -702,7 +702,8 @@ Result AccTcpServerDefault::Handshake(int &tmpFD, const AccConnReq &connReq, con
     }
 
     newLink = tmpLink.Get();
-    LOG_INFO("Connect to " << ipAndPort << " successfully, with ssl " << (tlsOption_.enableTls ? "enable" : "disable"));
+    LOG_TRACE("Connect to " << ipAndPort << " successfully, with ssl "
+                            << (tlsOption_.enableTls ? "enable" : "disable"));
     return ACC_OK;
 }
 

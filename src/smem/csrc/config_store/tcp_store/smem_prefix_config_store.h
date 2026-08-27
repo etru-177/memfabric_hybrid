@@ -77,7 +77,7 @@ public:
             wid);
     }
 
-    Result Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t)> &notify,
+    Result Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t, Result)> &notify,
                  uint32_t &wid) noexcept override
     {
         STORE_ASSERT_RETURN(baseStore_ != nullptr, SM_MALLOC_FAILED);

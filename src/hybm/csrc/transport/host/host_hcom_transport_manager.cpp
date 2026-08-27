@@ -130,7 +130,7 @@ Result HcomTransportManager::OpenDevice(const TransportOptions &options)
                                                             << " ret: " << ret);
         return BM_DL_FUNCTION_FAILED;
     }
-    BM_LOG_INFO("Create hcom service successful, nic: " << options.nic << " type: " << enumProtocolType);
+    BM_LOG_TRACE("Create hcom service successful, nic: " << options.nic << " type: " << enumProtocolType);
     DlHcomApi::ServiceSetHeartBeatOptions(rpcService_, 10, 3, 5); /* idle 10s, probe 3*5s, total ~25s */
     tlsConfig_ = options.tlsOption;
     DlHcomApi::ServiceSetTlsOptions(rpcService_, options.tlsOption.tlsEnable, C_SERVICE_TLS_1_3, C_SERVICE_AES_GCM_256,
@@ -960,7 +960,7 @@ void HcomTransportManager::HcomChannelDisconnected(uint32_t rankId, Hcom_Channel
     channels_[rankId] = 0;
     locker.unlock();
     if (rankId >= rankId_) {
-        BM_LOG_INFO("broken channel local server side:" << rankId_ << ", reconnect by remote side: " << rankId);
+        BM_LOG_TRACE("broken channel local server side:" << rankId_ << ", reconnect by remote side: " << rankId);
         return;
     }
 

@@ -184,19 +184,26 @@ bool JoinableRanksQpManager::CheckQpReady(const std::vector<uint32_t> &rankIds) 
 std::string JoinableRanksQpManager::GetErrorConnectionsStatus(const std::vector<uint32_t> &rankIds) const noexcept
 {
     std::ostringstream oss;
+    uint32_t okCnt = 0;
     for (auto rankId : rankIds) {
         if (rankId == rankId_) {
             continue;
         }
         if (rankId >= rankCount_) {
-            oss << "[rank=" << rankId << " : is out of range ]\r\n";
-        } else {
-            oss << "[rank=" << rankId << ": socketHandle=" << connections_[rankId].socketHandle
-                << " socketFd=" << connections_[rankId].socketFd
-                << " qpConnectCalled=" << connections_[rankId].qpConnectCalled
-                << " qpStatus=" << connections_[rankId].qpStatus << " ]\r\n";
+            oss << "[rank=" << rankId << ": is out of range]\r\n";
+            continue;
         }
+        if (connections_[rankId].qpStatus == 1) {
+            okCnt++;
+            continue;
+        }
+        oss << "[rank=" << rankId << " : remoteNet = " << DescribeIPv4(connections_[rankId].remoteNet.sin_addr) << ":"
+            << connections_[rankId].remoteNet.sin_port << " socketHandle=" << connections_[rankId].socketHandle
+            << " socketFd=" << connections_[rankId].socketFd
+            << " qpConnectCalled=" << connections_[rankId].qpConnectCalled
+            << " qpStatus=" << connections_[rankId].qpStatus << "]\r\n";
     }
+    oss << "[success connection ranks count=" << okCnt << "]\r\n";
     return oss.str();
 }
 

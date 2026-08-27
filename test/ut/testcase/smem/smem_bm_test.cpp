@@ -145,7 +145,7 @@ public:
     {
         return SM_ERROR;
     }
-    ock::smem::Result Watch(WatchRankType, const std::function<void(WatchRankType, uint32_t)> &,
+    ock::smem::Result Watch(WatchRankType, const std::function<void(WatchRankType, uint32_t, ock::smem::Result)> &,
                             uint32_t &) noexcept override
     {
         return SM_ERROR;

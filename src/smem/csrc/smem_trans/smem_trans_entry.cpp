@@ -302,8 +302,8 @@ Result SmemTransEntry::JoinImport(std::unordered_map<uint32_t, std::string> &all
 
 Result SmemTransEntry::JoinHandle(uint32_t rk)
 {
-    SM_LOG_INFO("do join func, local_rk: " << rankId_ << " receive_rk: " << rk
-                                           << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_TRACE("do join func, local_rk: " << rankId_ << " receive_rk: " << rk
+                                            << ", rank size is: " << globalGroup_->GetRankSize());
 
     std::string localInfo;
     if (rk == rankId_) {
@@ -342,8 +342,8 @@ Result SmemTransEntry::JoinHandle(uint32_t rk)
         goto rollback_exit;
     }
 
-    SM_LOG_INFO("end join func, local_rk: " << rankId_ << " receive_rk: " << rk << " receive_info_num:"
-                                            << allInfo.size() << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_TRACE("end join func, local_rk: " << rankId_ << " receive_rk: " << rk << " receive_info_num:"
+                                             << allInfo.size() << ", rank size is: " << globalGroup_->GetRankSize());
     return SM_OK;
 
 rollback_exit:
@@ -353,8 +353,8 @@ rollback_exit:
 
 Result SmemTransEntry::UpdateHandle(uint32_t rk)
 {
-    SM_LOG_INFO("do update func, local_rk: " << rankId_ << " receive_rk: " << rk
-                                             << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_TRACE("do update func, local_rk: " << rankId_ << " receive_rk: " << rk
+                                              << ", rank size is: " << globalGroup_->GetRankSize());
 
     uint32_t unitSize = sizeof(SmemTransExchangeInfo);
     std::string xinfo;
@@ -410,14 +410,14 @@ update_exit:
         return ret;
     }
 
-    SM_LOG_INFO("end update func, local_rk: " << rankId_ << " receive_rk: " << rk
-                                              << ", rank size is: " << globalGroup_->GetRankSize());
+    SM_LOG_TRACE("end update func, local_rk: " << rankId_ << " receive_rk: " << rk
+                                               << ", rank size is: " << globalGroup_->GetRankSize());
     return SM_OK;
 }
 
 Result SmemTransEntry::LeaveHandle(uint32_t rk)
 {
-    SM_LOG_INFO("do leave func, receive_rk: " << rk);
+    SM_LOG_TRACE("do leave func, receive_rk: " << rk);
     auto ret = hybm_remove_imported(entity_, rk, 0);
     if (ret != 0) {
         SM_LOG_ERROR("hybm_remove_imported (leave) failed, remoteRank: " << rk << " ret: " << ret);
@@ -428,7 +428,7 @@ Result SmemTransEntry::LeaveHandle(uint32_t rk)
 
 Result SmemTransEntry::LinkDownHandle(uint32_t rk)
 {
-    SM_LOG_INFO("do link down func, receive_rk: " << rk);
+    SM_LOG_TRACE("do link down func, receive_rk: " << rk);
 
     auto ret = hybm_remove_imported(entity_, rk, 0);
     if (ret != 0) {
@@ -450,7 +450,7 @@ Result SmemTransEntry::LinkDownHandle(uint32_t rk)
                 inet_ntop(AF_INET6, &w.address.ip.ipv6, ipBuf, sizeof(ipBuf));
             }
             std::string peerAddr = std::string(ipBuf) + ":" + std::to_string(w.port);
-            SM_LOG_INFO("invoking peer down callback for rank " << rk << " addr " << peerAddr);
+            SM_LOG_TRACE("invoking peer down callback for rank " << rk << " addr " << peerAddr);
             peerDownCallback_(peerAddr.c_str(), peerDownUserData_);
         }
     }

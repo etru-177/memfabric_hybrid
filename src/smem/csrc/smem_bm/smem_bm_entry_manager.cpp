@@ -86,7 +86,7 @@ Result SmemBmEntryManager::Initialize(const std::string &storeURL, uint32_t worl
     SM_LOG_ERROR_RETURN_IT_IF_NOT_OK(ret, "initialize failed: " << ret);
 
     inited_ = true;
-    SM_LOG_INFO("initialize store(" << storeURL << ") world size(" << worldSize << ") device(" << deviceId << ") OK.");
+    SM_LOG_TRACE("initialize store(" << storeURL << ") world size(" << worldSize << ") device(" << deviceId << ") OK.");
     return SM_OK;
 }
 
@@ -295,7 +295,7 @@ Result SmemBmEntryManager::UpdateStoreUrl(const std::string &storeURL)
     storeURL_ = storeURL;
     storeUrlExtraction_ = newExtraction;
 
-    SM_LOG_INFO("update store URL success, new URL: " << storeURL_);
+    SM_LOG_TRACE("update store URL success, new URL: " << storeURL_);
     return SM_OK;
 }
 

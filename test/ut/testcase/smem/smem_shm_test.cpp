@@ -109,7 +109,7 @@ public:
         wid = 0;
         return SM_OK;
     }
-    ock::smem::Result Watch(WatchRankType, const std::function<void(WatchRankType, uint32_t)> &,
+    ock::smem::Result Watch(WatchRankType, const std::function<void(WatchRankType, uint32_t, ock::smem::Result)> &,
                             uint32_t &wid) noexcept override
     {
         wid = 0;

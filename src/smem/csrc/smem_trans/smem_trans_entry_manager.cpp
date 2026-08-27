@@ -55,7 +55,7 @@ Result SmemTransEntryManager::CreateEntryByName(const std::string &name, const s
         rank = trans.rankId;
         auto tcpConfigStore = Convert<ConfigStore, ConfigStoreManager>(confStore);
         tcpConfigStore->SetRankId(static_cast<int32_t>(rank));
-        SM_LOG_INFO("Success to auto ranking rankId: " << trans.rankId << " deviceId: " << deviceId_);
+        SM_LOG_TRACE("Success to auto ranking rankId: " << trans.rankId << " deviceId: " << deviceId_);
     } else {
         SM_LOG_ERROR("Failed to auto ranking deviceId: " << deviceId_ << ", ret: " << ret
                                                          << ", dataSize: " << rankIdData.size());
@@ -76,9 +76,9 @@ Result SmemTransEntryManager::CreateEntryByName(const std::string &name, const s
 
     /* assign out object ptr */
     entry = tmpEntry;
-    SM_LOG_INFO("create new smem trans entry success. url:" << name << " rank:" << rank << " server:" << storeUrl
-                                                            << " ptr:0x" << std::hex << entry.Get()
-                                                            << " id:" << entryIdx_);
+    SM_LOG_TRACE("create new smem trans entry success. url:" << name << " rank:" << rank << " server:" << storeUrl
+                                                             << " ptr:0x" << std::hex << entry.Get()
+                                                             << " id:" << entryIdx_);
     entryIdx_++;
     return SM_OK;
 }

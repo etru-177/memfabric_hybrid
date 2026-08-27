@@ -113,7 +113,7 @@ HYBM_API int32_t hybm_init(uint16_t deviceId, uint64_t flags)
 
     initedDeviceId = deviceId;
     initialized = 1L;
-    BM_LOG_INFO("hybm init successfully, " << LIB_VERSION << ", deviceId: " << deviceId);
+    BM_LOG_TRACE("hybm init successfully, " << LIB_VERSION << ", deviceId: " << deviceId);
     return 0;
 }
 
@@ -134,20 +134,20 @@ HYBM_API void hybm_uninit()
     if ((socType == AscendSocType::ASCEND_950) || (HybmGetGvaVersion() == HYBM_GVA_V4)) {
         if (g_baseAddr != 0) {
             auto ret = DlHalApi::HalMemUnmap(reinterpret_cast<void *>(g_baseAddr));
-            BM_LOG_INFO("unmap meta info res: " << ret);
+            BM_LOG_TRACE("unmap meta info res: " << ret);
             if (g_allocHandle != nullptr) {
                 ret = DlHalApi::HalMemRelease((drv_mem_handle_t *)g_allocHandle);
                 g_allocHandle = nullptr;
-                BM_LOG_INFO("release meta memory handle res: " << ret);
+                BM_LOG_TRACE("release meta memory handle res: " << ret);
             }
             ret = DlHalApi::HalMemAddressFree(reinterpret_cast<void *>(g_baseAddr));
-            BM_LOG_INFO("free meta memory res: " << ret);
+            BM_LOG_TRACE("free meta memory res: " << ret);
         }
     } else {
         if (g_baseAddr != 0) {
             drv::HalGvaFree(HYBM_DEVICE_META_ADDR, HYBM_DEVICE_INFO_SIZE);
             auto ret = drv::HalGvaUnreserveMemory(g_baseAddr);
-            BM_LOG_INFO("uninitialize GVA memory return: " << ret);
+            BM_LOG_TRACE("uninitialize GVA memory return: " << ret);
             g_baseAddr = 0ULL;
         }
     }
@@ -184,7 +184,7 @@ HYBM_API void hybm_set_extern_alarm(void (*alarm)(uint16_t code, const char *msg
 HYBM_API int32_t hybm_set_log_level(int level)
 {
     BM_VALIDATE_RETURN(ock::mf::OutLogger::ValidateLevel(level),
-                       "set log level failed, invalid param, level should be 0~4", -1);
+                       "set log level failed, invalid param, level should be 0~5", -1);
     ock::mf::OutLogger::Instance().SetLogLevel(static_cast<ock::mf::LogLevel>(level));
     return 0;
 }

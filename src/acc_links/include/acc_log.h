@@ -28,7 +28,9 @@ extern "C" {
  * 0 DEBUG,
  * 1 INFO,
  * 2 WARN,
- * 3 ERROR
+ * 3 ERROR,
+ * 4 FATAL,
+ * 5 TRACE
  *
  * @param func             [in] external function
  * @return 0 if successfully
@@ -38,7 +40,7 @@ int32_t AccSetExternalLog(void (*func)(int level, const char *msg));
 /**
  * @brief Set log level
  *
- * @param level            [in] level, can be 0, 1, 2, 3
+ * @param level            [in] level, can be 0, 1, 2, 3, 4, 5
  * @return 0 if successfully
  */
 int32_t AccSetLogLevel(int level);

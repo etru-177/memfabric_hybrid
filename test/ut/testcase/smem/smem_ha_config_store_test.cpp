@@ -518,7 +518,7 @@ TEST_F(SmemHaConfigStoreTest, WatchAndGetRealReturnErrorWhenClientMissing)
     uint32_t wid = 0;
 
     EXPECT_EQ(SM_ERROR, store.Watch("k", [](int, const std::string &, const std::vector<uint8_t> &) {}, wid));
-    EXPECT_EQ(SM_ERROR, store.Watch(WATCH_RANK_LINK_DOWN, [](WatchRankType, uint32_t) {}, wid));
+    EXPECT_EQ(SM_ERROR, store.Watch(WATCH_RANK_LINK_DOWN, [](WatchRankType, uint32_t, ock::smem::Result) {}, wid));
     EXPECT_EQ(SM_ERROR, store.GetReal("k", value, 1));
 }
 

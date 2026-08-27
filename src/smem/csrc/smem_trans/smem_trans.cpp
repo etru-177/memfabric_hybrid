@@ -38,7 +38,7 @@ SMEM_API int32_t smem_trans_init(const smem_trans_config_t *config)
     SM_VALIDATE_RETURN(config != nullptr, "invalid config, which is null", SM_INVALID_PARAM);
 
     if (g_smemTransInited) {
-        SM_LOG_INFO("smem trans initialized already");
+        SM_LOG_TRACE("smem trans initialized already");
         return SM_OK;
     }
 
@@ -49,7 +49,7 @@ SMEM_API int32_t smem_trans_init(const smem_trans_config_t *config)
     }
 
     g_smemTransInited = true;
-    SM_LOG_INFO("smem trans initialized success");
+    SM_LOG_TRACE("smem trans initialized success");
     return SM_OK;
 }
 
@@ -98,7 +98,7 @@ SMEM_API void smem_trans_uninit(uint32_t flags)
     hybm_uninit();
     ock::smem::StoreFactory::DestroyStoreAll(false);
     g_smemTransInited = false;
-    SM_LOG_INFO("smem_trans_uninit finished");
+    SM_LOG_TRACE("smem_trans_uninit finished");
 }
 
 SMEM_API int32_t smem_trans_register_mem(smem_trans_t handle, void *address, size_t capacity, uint32_t flags)

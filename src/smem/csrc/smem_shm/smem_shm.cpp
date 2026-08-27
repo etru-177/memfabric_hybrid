@@ -344,7 +344,7 @@ SMEM_API int32_t smem_shm_init(const char *configStoreIpPort, uint32_t worldSize
     }
 
     g_smemShmInited = true;
-    SM_LOG_INFO("smem_shm_init success. world_size: " << worldSize);
+    SM_LOG_TRACE("smem_shm_init success. world_size: " << worldSize);
     return SM_OK;
 }
 
@@ -358,7 +358,7 @@ SMEM_API void smem_shm_uninit(uint32_t flags)
     SmemShmEntryManager::Instance().Destroy();
     hybm_uninit();
     g_smemShmInited = false;
-    SM_LOG_INFO("smem_shm_uninit finished");
+    SM_LOG_TRACE("smem_shm_uninit finished");
 }
 
 SMEM_API uint32_t smem_shm_query_support_data_operation(void)

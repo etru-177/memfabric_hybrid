@@ -118,7 +118,7 @@ Result RdmaTransportManager::OpenDevice(const TransportOptions &options)
     ret = InitStreamNotifyBuf();
     BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "notify init failed: " << ret, ret);
     ranksMRs_.resize(rankCount_);
-    BM_LOG_INFO("open device with " << options << " success.");
+    BM_LOG_TRACE("open device with " << options << " success.");
     return BM_OK;
 }
 
@@ -136,7 +136,7 @@ Result RdmaTransportManager::CloseDevice()
     ranksMRs_.clear();
     notifyRemoteInfo_.clear();
     deviceChipInfo_ = nullptr;
-    BM_LOG_INFO("CloseDevice successful.");
+    BM_LOG_TRACE("CloseDevice successful.");
     return BM_OK;
 }
 
@@ -511,7 +511,7 @@ void RdmaTransportManager::BuildTable(std::string &str, std::string &ip, uint32_
 
 bool RdmaTransportManager::GetRdmaHandleAfterInitHccl(uint32_t device, in_addr &deviceIp, void *&rdmaHandle)
 {
-    BM_LOG_INFO("hccl has inited, try create one hccl group.");
+    BM_LOG_TRACE("hccl has inited, try create one hccl group.");
     int32_t ret;
     std::string ip = DescribeIPv4(deviceIp);
 
@@ -545,10 +545,10 @@ bool RdmaTransportManager::PrepareOpenDevice(uint32_t userId, uint32_t device, u
                 BM_LOG_ERROR("RetireDeviceIp failed.");
                 return false;
             }
-            BM_LOG_INFO("Had prepared device and get rdmaHandle success.");
+            BM_LOG_TRACE("Had prepared device and get rdmaHandle success.");
             return true;
         }
-        BM_LOG_INFO("Had prepared device, but rdmaHandle is null, need init again.");
+        BM_LOG_TRACE("Had prepared device, but rdmaHandle is null, need init again.");
     }
     // OpenTsd need userDeviceId
     if (!OpenTsd(userId, rankCount)) {
@@ -694,7 +694,7 @@ bool RdmaTransportManager::RaRdevInit(uint32_t deviceId, in_addr deviceIp, void 
     }
 
     storedRdmaHandle = rdmaHandle;
-    BM_LOG_INFO("initialize RDev success.");
+    BM_LOG_TRACE("initialize RDev success.");
     return true;
 }
 

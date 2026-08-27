@@ -17,12 +17,16 @@ using namespace ock::offload;
 
 OFFLOAD_API int32_t offload_init(const offload_config_t &config)
 {
-    return AccOffloadEntryManager::Instance().Initialize(config);
+    auto ret = AccOffloadEntryManager::Instance().Initialize(config);
+    OFFLOAD_LOG_TRACE("offload_init ret: " << ret << ", deviceId: " << config.deviceId
+                                           << ", reserveSize: " << config.reserveSize);
+    return ret;
 }
 
 OFFLOAD_API void offload_uninit()
 {
     AccOffloadEntryManager::Instance().UnInitialize();
+    OFFLOAD_LOG_TRACE("offload_uninit finished");
 }
 
 OFFLOAD_API uint64_t offload_malloc(uint64_t size, uint64_t flags)

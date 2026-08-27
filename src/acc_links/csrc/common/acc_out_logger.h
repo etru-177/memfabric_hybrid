@@ -30,16 +30,11 @@
 #define LOG_WARN(ARGS)        MF_OUT_LOG("[AccLink ", ock::mf::WARN_LEVEL, ARGS)
 #define LOG_ERROR(ARGS)       MF_OUT_LOG("[AccLink ", ock::mf::ERROR_LEVEL, ARGS)
 #define LOG_ERROR_LIMIT(ARGS) MF_OUT_LOG_LIMIT("[AccLink ", ock::mf::ERROR_LEVEL, ARGS)
+#define LOG_TRACE(ARGS)       MF_OUT_LOG("[AccLink ", ock::mf::TRACE_LEVEL, ARGS)
 
 #define LOG_ALARM(CODE, ARGS)       MF_ALARM_LOG("[AccLink ", CODE, ARGS)
 #define LOG_ALARM_LIMIT(CODE, ARGS) MF_ALARM_LOG_LIMIT("[AccLink ", CODE, ARGS)
 #define LOG_RESUME(CODE)            MF_RESUME_LOG(CODE)
-
-#ifndef ENABLE_TRACE_LOG
-#define LOG_TRACE(x)
-#else
-#define LOG_TRACE(x) ACC_LINKS_OUT_LOG(DEBUG_LEVEL, AccLinksTrace, ARGS)
-#endif
 
 #define ASSERT_RETURN(ARGS, RET)           \
     do {                                   \

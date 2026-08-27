@@ -612,7 +612,7 @@ TcpConfigStore::Watch(const std::string &key,
     return SM_OK;
 }
 
-Result TcpConfigStore::Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t)> &notify,
+Result TcpConfigStore::Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t, Result)> &notify,
                              uint32_t &wid) noexcept
 {
     if (type != WATCH_RANK_LINK_DOWN) {
@@ -627,7 +627,9 @@ Result TcpConfigStore::Watch(WatchRankType type, const std::function<void(WatchR
         packedRequest,
         [notify](int res, const std::vector<uint8_t> &value) {
             if (res == SM_OK && value.size() == sizeof(uint32_t)) {
-                notify(WATCH_RANK_LINK_DOWN, *(const uint32_t *)(const void *)value.data());
+                notify(WATCH_RANK_LINK_DOWN, *(const uint32_t *)(const void *)value.data(), SM_OK);
+            } else {
+                notify(WATCH_RANK_LINK_DOWN, 0, SM_ERROR);
             }
         },
         wid, WATCH_RANK_DOWN_KEY);

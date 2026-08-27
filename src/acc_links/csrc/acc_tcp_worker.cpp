@@ -59,7 +59,7 @@ void AccTcpWorker::Stop(bool afterFork)
 
 void AccTcpWorker::StopInner(bool afterFork)
 {
-    LOG_TRACE("Try to stop worker " << options_.Name());
+    LOG_DEBUG("Try to stop worker " << options_.Name());
     needStop_ = true;
     if (epollThread_.joinable()) {
         if (afterFork) {
@@ -83,7 +83,7 @@ Result AccTcpWorker::AddLink(const AccTcpLinkDefaultPtr &link, uint32_t events) 
     evNewFd.data.ptr = link.Get();
     evNewFd.events = events;
 
-    LOG_TRACE("Adding link " << link->ShortName() << " into sock worker " << options_.Name());
+    LOG_DEBUG("Adding link " << link->ShortName() << " into sock worker " << options_.Name());
 
     if (UNLIKELY(epoll_ctl(epollFD_, EPOLL_CTL_ADD, link->fd_, &evNewFd) != 0)) {
         LOG_ERROR("Failed to add link " << link->ShortName() << " into worker " << options_.Name() << ", errno "
@@ -100,7 +100,7 @@ Result AccTcpWorker::RemoveLink(const AccTcpLinkDefaultPtr &link) noexcept
     ASSERT_RETURN(link.Get(), ACC_INVALID_PARAM);
     ASSERT_RETURN(link->fd_ != -1, ACC_INVALID_PARAM);
 
-    LOG_TRACE("Try to remove link " << link->ShortName() << " from sock worker " << options_.Name());
+    LOG_DEBUG("Try to remove link " << link->ShortName() << " from sock worker " << options_.Name());
 
     if (UNLIKELY(epoll_ctl(epollFD_, EPOLL_CTL_DEL, link->fd_, nullptr) != 0)) {
         LOG_ERROR("Failed to remove " << link->ShortName() << " from sock worker " << options_.Name()
@@ -151,7 +151,7 @@ void AccTcpWorker::RunInThread(std::atomic<bool> *started)
 {
     SetPropertiesForThread();
     started->store(true);
-    LOG_INFO("Worker [" << options_.ToString() << "] progress thread started");
+    LOG_TRACE("Worker [" << options_.ToString() << "] progress thread started");
 
     const uint16_t pollBatchSize = 16L;
     const uint32_t timeout = options_.pollingTimeoutMs;
@@ -163,16 +163,16 @@ void AccTcpWorker::RunInThread(std::atomic<bool> *started)
         int count = epoll_wait(epollFD_, ev, pollBatchSize, timeout);
         if (count > 0) {
             /* there are events, handle it */
-            LOG_TRACE("Got " << count << " in worker " << options_.Name());
+            LOG_DEBUG("Got " << count << " in worker " << options_.Name());
             for (uint16_t i = 0; i < static_cast<uint16_t>(count); ++i) {
                 struct epoll_event &oneEv = (ev)[i];
                 ProcessEvent(oneEv);
             }
         } else if (count == 0) {
-            LOG_TRACE("Got " << count << " in worker " << options_.Name());
+            LOG_DEBUG("Got " << count << " in worker " << options_.Name());
             continue;
         } else if (errno == EINTR) {
-            LOG_TRACE("Got error no EINTR in worker " << options_.Name());
+            LOG_DEBUG("Got error no EINTR in worker " << options_.Name());
             continue;
         } else {
             LOG_ERROR("Failed to do epoll_wait in worker " << options_.Name() << ", errno:" << errno);
@@ -186,7 +186,7 @@ Result AccTcpWorker::ModifyLink(const AccTcpLinkDefaultPtr &link, uint32_t event
 {
     ASSERT_RETURN(link.Get(), ACC_INVALID_PARAM);
 
-    LOG_TRACE("Try to modify link " << link->ShortName() << " in sock worker " << options_.Name() << " with event "
+    LOG_DEBUG("Try to modify link " << link->ShortName() << " in sock worker " << options_.Name() << " with event "
                                     << events);
 
     struct epoll_event evNewFd {};
@@ -297,7 +297,7 @@ Result AccTcpWorker::ProcessEvent(struct epoll_event &event) noexcept
         return ProcessPollWrNorm(link);
     }
 
-    LOG_TRACE("Receive link " << link->id_ << " event " << event.events);
+    LOG_DEBUG("Receive link " << link->id_ << " event " << event.events);
     return ACC_OK;
 }
 

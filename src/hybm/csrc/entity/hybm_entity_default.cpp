@@ -99,7 +99,7 @@ Result MemEntityDefault::InitTagManager()
     BM_ASSERT_LOG_AND_RETURN(tagManager_->AddTagOpInfo(compatibleInfo.str()) == BM_OK,
                              "Failed to add tagOpInfo:" << compatibleInfo.str(), BM_INVALID_PARAM);
     options_.bmDataOpType = static_cast<hybm_data_op_type>(tagManager_->GetAllOpType());
-    BM_LOG_INFO("Success to init tag manager data op type:" << options_.bmDataOpType);
+    BM_LOG_TRACE("Success to init tag manager data op type:" << options_.bmDataOpType);
     return BM_OK;
 }
 
@@ -1171,12 +1171,12 @@ Result MemEntityDefault::InitHbmSegment()
         segmentOptions.size = options_.deviceVASpace;
         segmentOptions.maxSize = options_.maxHBMSize;
         segmentOptions.segType = HYBM_MST_HBM;
-        BM_LOG_INFO("create entity global unified memory space.");
+        BM_LOG_TRACE("create entity global unified memory space.");
     } else {
         segmentOptions.size = options_.deviceVASpace;
         segmentOptions.maxSize = options_.maxHBMSize;
         segmentOptions.segType = HYBM_MST_HBM_USER;
-        BM_LOG_INFO("create entity user defined memory space.");
+        BM_LOG_TRACE("create entity user defined memory space.");
     }
     segmentOptions.devId = HybmGetInitDeviceId();
     segmentOptions.rankId = options_.rankId;

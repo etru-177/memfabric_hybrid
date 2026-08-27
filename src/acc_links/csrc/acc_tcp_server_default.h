@@ -157,7 +157,7 @@ inline Result AccTcpServerDefault::HandleRequestSent(AccMsgSentResult msgResult,
     ASSERT_RETURN(msgType >= MIN_MSG_TYPE && msgType < MAX_MSG_TYPE, ACC_LINK_MSG_INVALID);
     auto &handler = requestSentHandle_[msgType];
     if (handler == nullptr) {
-        LOG_TRACE("RequestSentHandler is not register for msg type " << msgType << ", msg dropped");
+        LOG_DEBUG("RequestSentHandler is not register for msg type " << msgType << ", msg dropped");
         return ACC_LINK_MSG_INVALID;
     }
 

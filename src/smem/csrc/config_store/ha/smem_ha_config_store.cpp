@@ -112,7 +112,7 @@ HaConfigStore::~HaConfigStore()
 
 Result HaConfigStore::Startup(const smem_tls_config &tlsConfig) noexcept
 {
-    SM_LOG_INFO("HaConfigStore starting, endpoints: " << endpoints_);
+    SM_LOG_TRACE("HaConfigStore starting, endpoints: " << endpoints_);
 
     if (clientDelegate_ == nullptr) {
         SM_LOG_ERROR("clientDelegate_ is null, cannot start");
@@ -121,23 +121,23 @@ Result HaConfigStore::Startup(const smem_tls_config &tlsConfig) noexcept
 
     tlsConfig_ = tlsConfig;
 
-    SM_LOG_INFO("Entering election loop");
+    SM_LOG_TRACE("Entering election loop");
     RunElectionLoop();
     StartHealthCheckThread();
-    SM_LOG_INFO("HaConfigStore started successfully");
+    SM_LOG_TRACE("HaConfigStore started successfully");
     return SM_OK;
 }
 
 bool HaConfigStore::InitBackendConnection() noexcept
 {
-    SM_LOG_INFO("Initializing backend connection: " << endpoints_);
+    SM_LOG_TRACE("Initializing backend connection: " << endpoints_);
     int backendRet = backend_->Initialize(endpoints_, "", "");
     if (backendRet != 0) {
         SM_LOG_ERROR("Failed to init backend client, endpoints: " << endpoints_ << ", ret: " << backendRet);
         return false;
     }
 
-    SM_LOG_INFO("Backend connection initialized, endpoints: " << endpoints_);
+    SM_LOG_TRACE("Backend connection initialized, endpoints: " << endpoints_);
     return true;
 }
 
@@ -176,7 +176,7 @@ bool HaConfigStore::IsLeaderAlive(std::string &leaderAddr) noexcept
     }
 
     bool reachable = NetworkEndpointUtil::CheckConnectivity(ip, port);
-    SM_LOG_INFO("Leader " << leaderAddr << " reachable: " << (reachable ? "true" : "false"));
+    SM_LOG_TRACE("Leader " << leaderAddr << " reachable: " << (reachable ? "true" : "false"));
     return reachable;
 }
 
@@ -187,7 +187,7 @@ Result HaConfigStore::TryBecomeLeader() noexcept
     SM_ASSERT_RETURN(NetworkEndpointUtil::FindAvailablePort(leaderBindPort_, endpoints_.find('[') != std::string::npos),
                      SM_ERROR);
     SM_ASSERT_RETURN(NetworkEndpointUtil::GetLocalIpWithTarget(leaderBindIp_, leaderBindIp_), SM_ERROR);
-    SM_LOG_INFO("Attempting to become leader, addr: " << leaderBindIp_ << ":" << leaderBindPort_);
+    SM_LOG_TRACE("Attempting to become leader, addr: " << leaderBindIp_ << ":" << leaderBindPort_);
 
     // Start server
     StartServer();
@@ -195,7 +195,7 @@ Result HaConfigStore::TryBecomeLeader() noexcept
         SM_LOG_ERROR("StartServer failed");
         return SM_ERROR;
     }
-    SM_LOG_INFO("AccStoreServer started successfully");
+    SM_LOG_TRACE("AccStoreServer started successfully");
 
     // Register as leader in backend
     const std::string myEndpoint = NetworkEndpointUtil::BuildEndpoint("tcp", leaderBindIp_, leaderBindPort_);
@@ -207,7 +207,7 @@ Result HaConfigStore::TryBecomeLeader() noexcept
         StopServer();
         return SM_ERROR;
     }
-    SM_LOG_INFO("Registered in backend: " << myAddr << ", TTL: " << PUT_LEASE_TTL_SEC << "s");
+    SM_LOG_TRACE("Registered in backend: " << myAddr << ", TTL: " << PUT_LEASE_TTL_SEC << "s");
 
     // Connect client delegate to self
     auto clientRet = ConnectClient(leaderBindIp_, leaderBindPort_);
@@ -217,7 +217,7 @@ Result HaConfigStore::TryBecomeLeader() noexcept
         isLeader_.store(false, std::memory_order_release);
         return SM_ERROR;
     }
-    SM_LOG_INFO("Self-connection established");
+    SM_LOG_TRACE("Self-connection established");
 
     return SM_OK;
 }
@@ -277,12 +277,12 @@ void HaConfigStore::RunElectionLoop() noexcept
                     continue;
                 }
                 backend_->UnInitialize();
-                SM_LOG_INFO("Election loop exiting: became follower of " << leaderAddr << " after lock");
+                SM_LOG_TRACE("Election loop exiting: became follower of " << leaderAddr << " after lock");
                 return;
             }
             SM_LOG_INFO("Proceeding to become leader");
             if (TryBecomeLeader() == SM_OK) {
-                SM_LOG_INFO("Became leader after " << electionAttempt << " attempts");
+                SM_LOG_TRACE("Became leader after " << electionAttempt << " attempts");
                 becameLeader = true;
             } else {
                 SM_LOG_ERROR("TryBecomeLeader failed, electionAttempt: " << electionAttempt
@@ -296,7 +296,7 @@ void HaConfigStore::RunElectionLoop() noexcept
         }
         backend_->UnInitialize();
     }
-    SM_LOG_INFO("Election loop exiting: stop flag set after " << electionAttempt << " attempts");
+    SM_LOG_TRACE("Election loop exiting: stop flag set after " << electionAttempt << " attempts");
 }
 
 // ============================================================================
@@ -313,7 +313,7 @@ void HaConfigStore::StartServer() noexcept
         return;
     }
 
-    SM_LOG_INFO("ip: " << leaderBindIp_ << ", port: " << leaderBindPort_ << ", worldSize: " << worldSize_);
+    SM_LOG_TRACE("ip: " << leaderBindIp_ << ", port: " << leaderBindPort_ << ", worldSize: " << worldSize_);
 
     // Recover world size from backend
     std::string worldSizeStr;
@@ -325,7 +325,7 @@ void HaConfigStore::StartServer() noexcept
             if (recoveredWorldSize == 0) {
                 SM_LOG_WARN("Recovered worldSize is 0, using default: " << worldSize_);
             } else {
-                SM_LOG_INFO("Recovered worldSize from backend: " << recoveredWorldSize);
+                SM_LOG_TRACE("Recovered worldSize from backend: " << recoveredWorldSize);
                 recovered = true;
             }
         } else {
@@ -440,7 +440,7 @@ void HaConfigStore::TriggerReElectionAsync() noexcept
 Result HaConfigStore::ConnectClient(const std::string &ip, uint16_t port) noexcept
 {
     SM_ASSERT_RETURN(clientDelegate_ != nullptr, SM_ERROR);
-    SM_LOG_INFO("Target: " << ip << ":" << port);
+    SM_LOG_TRACE("Target: " << ip << ":" << port);
 
     auto parser =
         SocketAddressParserMgr::getInstance().CreateParser(NetworkEndpointUtil::BuildEndpoint("tcp", ip, port));
@@ -461,7 +461,7 @@ Result HaConfigStore::ConnectClient(const std::string &ip, uint16_t port) noexce
         return reconnectRet;
     }
     // First time connection
-    SM_LOG_INFO("First time connection to: " << ip << ":" << port);
+    SM_LOG_TRACE("First time connection to: " << ip << ":" << port);
     Result clientStartRet = clientDelegate_->ClientStart(tlsConfig_);
     if (clientStartRet != SM_OK) {
         SM_LOG_ERROR("ClientStart failed, ip: " << ip << " port: " << port << " ret: " << clientStartRet);
@@ -492,7 +492,7 @@ Result HaConfigStore::BecomeFollower(const std::string &leaderIpPort) noexcept
         return SM_ERROR;
     }
 
-    SM_LOG_INFO("Connecting to leader, ip: " << ip << ", port: " << port);
+    SM_LOG_TRACE("Connecting to leader, ip: " << ip << ", port: " << port);
     auto connectRet = ConnectClient(ip, port);
     SM_ASSERT_RETURN(connectRet == SM_OK, connectRet);
     SM_LOG_INFO("Connection initiated to leader");
@@ -596,7 +596,7 @@ HaConfigStore::Watch(const std::string &key,
     return clientDelegate_->Watch(key, notify, wid);
 }
 
-Result HaConfigStore::Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t)> &notify,
+Result HaConfigStore::Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t, Result)> &notify,
                             uint32_t &wid) noexcept
 {
     SM_ASSERT_RETURN(clientDelegate_ != nullptr, SM_ERROR);

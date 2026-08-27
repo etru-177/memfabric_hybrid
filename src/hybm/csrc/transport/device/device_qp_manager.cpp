@@ -99,7 +99,7 @@ int DeviceQpManager::CreateServerSocket() noexcept
         return BM_DL_FUNCTION_FAILED;
     }
 
-    BM_LOG_INFO("start to listen on port: " << listenInfo.port << " success.");
+    BM_LOG_TRACE("start to listen on port: " << listenInfo.port << " success.");
     serverSocketHandle_ = socketHandle;
     return BM_OK;
 }
@@ -115,12 +115,12 @@ void DeviceQpManager::DestroyServerSocket() noexcept
     listenInfo.port = deviceAddress_.sin_port;
     auto ret = DlHccpApi::RaSocketListenStop(&listenInfo, 1);
     if (ret != 0) {
-        BM_LOG_INFO("stop to listen on port: " << listenInfo.port << " return: " << ret);
+        BM_LOG_TRACE("stop to listen on port: " << listenInfo.port << " return: " << ret);
     }
 
     ret = DlHccpApi::RaSocketDeinit(serverSocketHandle_);
     if (ret != 0) {
-        BM_LOG_INFO("deinit server socket return: " << ret);
+        BM_LOG_TRACE("deinit server socket return: " << ret);
     }
     serverSocketHandle_ = nullptr;
 }

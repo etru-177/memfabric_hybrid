@@ -115,7 +115,7 @@ int FixedRanksQpManager::WaitingConnectionReady() noexcept
     }
 
     if (serverConnectResult == BM_OK && clientConnectResult == BM_OK) {
-        BM_LOG_INFO("client & server connections ready.");
+        BM_LOG_TRACE("client & server connections ready.");
         return BM_OK;
     }
 
@@ -322,7 +322,7 @@ int FixedRanksQpManager::CheckReadyConnection(std::unordered_map<uint32_t, AiCor
     }
 
     pos->second.socketFd = socketInfo.fd;
-    BM_LOG_INFO("connect to (" << rankId << ") ready.");
+    BM_LOG_TRACE("connect to (" << rankId << ") ready.");
     return BM_OK;
 }
 
@@ -590,14 +590,14 @@ void FixedRanksQpManager::CloseConnections(std::unordered_map<uint32_t, AiCoreCo
     if (!socketCloseInfos.empty()) {
         auto ret = DlHccpApi::RaSocketBatchClose(socketCloseInfos.data(), socketCloseInfos.size());
         if (ret != 0) {
-            BM_LOG_INFO("close sockets return: " << ret);
+            BM_LOG_TRACE("close sockets return: " << ret);
         }
     }
 
     for (auto it = connections.begin(); it != connections.end(); ++it) {
         auto ret = DlHccpApi::RaSocketDeinit(it->second.socketHandle);
         if (ret != 0) {
-            BM_LOG_INFO("deinit socket to server: " << it->first << " return: " << ret);
+            BM_LOG_TRACE("deinit socket to server: " << it->first << " return: " << ret);
         }
     }
 

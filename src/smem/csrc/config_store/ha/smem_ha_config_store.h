@@ -78,7 +78,7 @@ public:
     Watch(const std::string &key,
           const std::function<void(int result, const std::string &, const std::vector<uint8_t> &)> &notify,
           uint32_t &wid) noexcept override;
-    [[nodiscard]] Result Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t)> &notify,
+    [[nodiscard]] Result Watch(WatchRankType type, const std::function<void(WatchRankType, uint32_t, Result)> &notify,
                                uint32_t &wid) noexcept override;
     [[nodiscard]] Result Unwatch(uint32_t wid) noexcept override;
     [[nodiscard]] Result Write(const std::string &key, const std::vector<uint8_t> &value,

@@ -913,7 +913,15 @@ uint32_t SmemNetGroupEngine::ReWatchLinkDown()
     uint32_t wid;
     auto ret = store_->Watch(
         WatchRankType::WATCH_RANK_LINK_DOWN,
-        [this](WatchRankType type, uint32_t downRankId) { RemoteRankLinkDownCb(downRankId); }, wid);
+        [this](WatchRankType type, uint32_t downRankId, Result ret) {
+            if (ret != SM_OK) {
+                SM_LOG_WARN_LIMIT("watch link down event failed, ret: " << ret);
+                linkListenSignal_.OperateInLock([this, ret]() { linkCtx_.ret = ret; }, true);
+                return;
+            }
+            RemoteRankLinkDownCb(downRankId);
+        },
+        wid);
     if (ret != SM_OK || wid == UINT32_MAX) {
         SM_LOG_ERROR("group watch failed, ret: " << ret);
         usleep(SMEM_GROUP_SLEEP_TIMEOUT);
@@ -1093,7 +1101,7 @@ int32_t SmemNetGroupEngine::JoinLeaveEventProcess()
                 ret = option_.leaveCb(groupInfo_.targetRank);
             }
             if (joined_ && groupInfo_.targetRank == option_.rank) {
-                SM_LOG_INFO("leave self, rank:" << option_.rank << " event:" << groupInfo_.curEvent);
+                SM_LOG_TRACE("leave self, rank:" << option_.rank << " event:" << groupInfo_.curEvent);
                 groupStoped_.store(false);
             }
             break;
@@ -1404,7 +1412,7 @@ Result SmemNetGroupEngine::GroupJoin()
 
         SmemGroupInfo info = GenerateInfo(JOIN_EVENT, option_.rank, old);
         if (!UpdateBitmapFromRank(info, option_.rank)) { // has same rank joined
-            SM_LOG_INFO("found old rank, try remove it, rank:" << option_.rank);
+            SM_LOG_TRACE("found old rank, try remove it, rank:" << option_.rank);
             DoLinkDownOnce(option_.rank);
             usleep(SMEM_GROUP_SLEEP_TIMEOUT);
             continue;
@@ -1515,7 +1523,7 @@ Result SmemNetGroupEngine::GroupLeave()
     SM_ASSERT_RETURN(store_ != nullptr, SM_INVALID_PARAM);
     SM_ASSERT_RETURN(option_.dynamic, SM_INVALID_PARAM);
     SM_ASSERT_RETURN(joined_, SM_NOT_STARTED);
-    SM_LOG_INFO("do leave by user, rank:" << option_.rank);
+    SM_LOG_TRACE("do leave by user, rank:" << option_.rank);
 
     // If the config store link is already broken, skip the Cas retry loop entirely.
     // Each Cas call would block ~1-2s inside LocalNonBlockSend→ReConnectAfterBroken,
@@ -1637,7 +1645,7 @@ int32_t SmemNetGroupEngine::LinkReconnectHandler()
     std::string val((char *)&info, SMEM_GROUP_INFO_SIZE);
     auto ret = store_->Cas(SMEM_GROUP_LISTEN_EVENT_KEY, old, val, old);
     if (ret == SM_OK) { // will cas ok if key not exist
-        SM_LOG_INFO("set group info success, rank:" << option_.rank);
+        SM_LOG_TRACE("set group info success, rank:" << option_.rank);
     } else {
         info = *reinterpret_cast<SmemGroupInfo *>(const_cast<char *>(old.c_str())); // update last info
         TryUpdateInfo(info);
@@ -1660,7 +1668,7 @@ int32_t SmemNetGroupEngine::LinkReconnectHandler()
         }
     }
 
-    SM_LOG_INFO("reconnect success, rank:" << option_.rank << " " << info);
+    SM_LOG_TRACE("reconnect success, rank:" << option_.rank << " " << info);
     return SM_OK;
 }
 

@@ -213,6 +213,9 @@ TEST_F(HybmEntryTest, hybm_set_log_level_valid_levels)
 
     auto ret4 = hybm_set_log_level(4);
     EXPECT_EQ(ret4, 0);
+
+    auto ret5 = hybm_set_log_level(5);
+    EXPECT_EQ(ret5, 0);
 }
 
 TEST_F(HybmEntryTest, hybm_set_log_level_invalid_levels)
@@ -220,7 +223,7 @@ TEST_F(HybmEntryTest, hybm_set_log_level_invalid_levels)
     auto ret_neg = hybm_set_log_level(-1);
     EXPECT_EQ(ret_neg, -1);
 
-    auto ret_large = hybm_set_log_level(5);
+    auto ret_large = hybm_set_log_level(6);
     EXPECT_EQ(ret_large, -1);
 }
 

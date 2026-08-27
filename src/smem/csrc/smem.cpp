@@ -36,7 +36,7 @@ SMEM_API int32_t smem_init(uint32_t flags)
 {
     using namespace ock::smem;
     g_smemInited = true;
-    SM_LOG_INFO("smem init successfully, " << LIB_VERSION);
+    SM_LOG_TRACE("smem init successfully, " << LIB_VERSION);
     return SM_OK;
 }
 
