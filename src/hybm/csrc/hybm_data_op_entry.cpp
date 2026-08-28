@@ -152,6 +152,23 @@ HYBM_API int32_t hybm_data_batch_copy(hybm_entity_t e, hybm_batch_copy_params *p
     return entity->BatchCopyData(*params, direction, stream, flags);
 }
 
+HYBM_API int32_t hybm_data_batch_raw_copy(hybm_entity_t e, hybm_batch_raw_copy_params *params,
+                                          hybm_data_copy_direction direction)
+{
+    BM_ASSERT_LOG_AND_RETURN(e != nullptr, "e is nullptr", BM_INVALID_PARAM);
+    BM_ASSERT_LOG_AND_RETURN(params != nullptr, "params is nullptr", BM_INVALID_PARAM);
+    BM_ASSERT_LOG_AND_RETURN(params->localAddrs != nullptr, "params->localAddrs is nullptr", BM_INVALID_PARAM);
+    BM_ASSERT_LOG_AND_RETURN(params->remoteAddrs != nullptr, "params->remoteAddrs is nullptr", BM_INVALID_PARAM);
+    BM_ASSERT_LOG_AND_RETURN(params->dataSizes != nullptr, "params->dataSizes is nullptr", BM_INVALID_PARAM);
+    BM_ASSERT_LOG_AND_RETURN(params->batchSize != 0, "params->batchSize = " << params->batchSize, BM_INVALID_PARAM);
+    BM_ASSERT_LOG_AND_RETURN(direction < HYBM_DATA_COPY_DIRECTION_BUTT, "direction = " << direction, BM_INVALID_PARAM);
+    BM_LOG_DEBUG("raw batch copy rankId:" << params->rankId << " batchSize:" << params->batchSize
+                                          << " direction:" << direction);
+
+    auto entity = (MemEntity *)e;
+    return entity->BatchRawCopyData(*params, direction);
+}
+
 HYBM_API int32_t hybm_data_quant_copy(hybm_entity_t e, hybm_quant_copy_params *params)
 {
     BM_ASSERT_LOG_AND_RETURN(e != nullptr, "e is nullptr", BM_INVALID_PARAM);

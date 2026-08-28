@@ -865,6 +865,52 @@ int32_t MemEntityDefault::BatchCopyData(hybm_batch_copy_params &params, hybm_dat
     return ret;
 }
 
+int32_t MemEntityDefault::BatchRawCopyData(hybm_batch_raw_copy_params &params,
+                                           hybm_data_copy_direction direction) noexcept
+{
+    if (!initialized_) {
+        BM_LOG_ERROR("the object is not initialized, please check whether Initialize is called.");
+        return BM_NOT_INITIALIZED;
+    }
+    auto ret = SetThreadAclDevice();
+    BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "ret = " << ret, BM_ERROR);
+    if (transportManager_ == nullptr) {
+        BM_LOG_ERROR("batch raw copy failed, transportManager_ is null, rankId:" << params.rankId
+                                                                                   << " batchSize:" << params.batchSize);
+        return BM_NOT_INITIALIZED;
+    }
+
+    bool isWrite = (direction == HYBM_LOCAL_HOST_TO_GLOBAL_HOST || direction == HYBM_LOCAL_HOST_TO_GLOBAL_DEVICE ||
+                    direction == HYBM_LOCAL_DEVICE_TO_GLOBAL_HOST || direction == HYBM_LOCAL_DEVICE_TO_GLOBAL_DEVICE);
+    bool isRead = (direction == HYBM_GLOBAL_HOST_TO_LOCAL_HOST || direction == HYBM_GLOBAL_HOST_TO_LOCAL_DEVICE ||
+                   direction == HYBM_GLOBAL_DEVICE_TO_LOCAL_HOST || direction == HYBM_GLOBAL_DEVICE_TO_LOCAL_DEVICE);
+    if (!isWrite && !isRead) {
+        BM_LOG_ERROR("batch raw copy unsupported direction:" << direction << " rankId:" << params.rankId);
+        return BM_NOT_SUPPORTED;
+    }
+
+    CopyDescriptor descriptor;
+    descriptor.localAddrs.assign(params.localAddrs, params.localAddrs + params.batchSize);
+    descriptor.globalAddrs.assign(params.remoteAddrs, params.remoteAddrs + params.batchSize);
+    descriptor.counts.assign(params.dataSizes, params.dataSizes + params.batchSize);
+
+    if (isWrite) {
+        ret = transportManager_->WriteRemoteBatchAsync(params.rankId, descriptor);
+    } else {
+        ret = transportManager_->ReadRemoteBatchAsync(params.rankId, descriptor);
+    }
+    if (ret != BM_OK) {
+        BM_LOG_ERROR("batch raw copy async failed, ret:" << ret << " rankId:" << params.rankId
+                                                         << " batchSize:" << params.batchSize << " isWrite:" << isWrite);
+        return ret;
+    }
+    ret = transportManager_->Synchronize(params.rankId);
+    if (ret != BM_OK) {
+        BM_LOG_ERROR("batch raw copy synchronize failed, ret:" << ret << " rankId:" << params.rankId);
+    }
+    return ret;
+}
+
 int32_t MemEntityDefault::QuantCopy(hybm_quant_copy_params &params) noexcept
 {
     BM_VALIDATE_RETURN(initialized_, "the object is not initialized, please check whether Initialize is called.",
@@ -1017,7 +1063,7 @@ int MemEntityDefault::LoadExtendLibrary() noexcept
             return ret;
         }
     }
-    if (options_.bmDataOpType & (HYBM_DOP_TYPE_HOST_RDMA | HYBM_DOP_TYPE_HOST_URMA | HYBM_DOP_TYPE_HOST_TCP)) {
+    if (options_.bmDataOpType & (HYBM_DOP_TYPE_HOST_RDMA | HYBM_DOP_TYPE_HOST_TCP)) {
         auto ret = DlApi::LoadExtendLibrary(DlApiExtendLibraryType::DL_EXT_LIB_HOST_RDMA);
         if (ret != 0) {
             BM_LOG_ERROR("LoadExtendLibrary for HOST RDMA failed: " << ret);

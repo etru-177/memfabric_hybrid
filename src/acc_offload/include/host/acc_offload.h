@@ -19,8 +19,9 @@ extern "C" {
 #endif
 
 typedef enum {
-    OFFLOAD_SCENE_LOCAL = 0,  /* single-card local DRAM memory pool */
-    OFFLOAD_SCENE_SHARED = 1, /* multi-card shared DRAM memory pool */
+    OFFLOAD_SCENE_LOCAL = 0,      /* single-card local DRAM memory pool */
+    OFFLOAD_SCENE_SHARED = 1,     /* multi-card shared DRAM memory pool */
+    OFFLOAD_SCENE_LOCAL_URMA = 2, /* single-card local URMA memory pool (host+device entity pair) */
 } offload_scene_t;
 
 /**

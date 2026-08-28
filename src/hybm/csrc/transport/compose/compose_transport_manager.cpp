@@ -17,6 +17,7 @@
 #include "hybm_def.h"
 #include "hybm_logger.h"
 #include "host_hcom_transport_manager.h"
+#include "host_urma_transport_manager.h"
 #include "device_rdma_transport_manager.h"
 #include "hybm_gva_version.h"
 #include "device_urma_transport_manager.h"
@@ -39,7 +40,11 @@ Result ComposeTransportManager::OpenHostTransport(const TransportOptions &option
         BM_LOG_ERROR("Failed to open host transport is opened");
         return BM_ERROR;
     }
-    hostTransportManager_ = host::HcomTransportManager::GetInstance();
+    if (options.protocol & HYBM_DOP_TYPE_HOST_URMA) {
+        hostTransportManager_ = std::make_shared<host::HostUrmaTransportManager>();
+    } else {
+        hostTransportManager_ = host::HcomTransportManager::GetInstance();
+    }
     return hostTransportManager_->OpenDevice(options);
 }
 
@@ -224,7 +229,11 @@ Result ComposeTransportManager::QueryMemoryKey(uint64_t addr, TransportMemoryKey
             BM_LOG_WARN("Unable to query host transport memKey addr:" << std::hex << addr);
             // HCOM 无法处理HBM池，这里直接返回，兼容即开启HBM池又要走HCOM通信的场景
         }
-        WriteHcomMemoryKey(tmp, key);
+        if (options_.protocol & HYBM_DOP_TYPE_HOST_URMA) {
+            WriteDeviceUrmaMemoryKey(tmp, key);
+        } else {
+            WriteHcomMemoryKey(tmp, key);
+        }
     }
 
     return BM_OK;
@@ -252,17 +261,20 @@ void ComposeTransportManager::GetHostPrepareOptions(const HybmTransPrepareOption
     auto options = param.options;
     for (const auto &item : options) {
         auto rankId = item.first;
-        uint32_t opType = tagManager_->GetRank2RankOpType(rankId, options_.rankId);
-        if (!(opType & HOST_PROTOCOL)) {
-            BM_LOG_DEBUG("remote rank:" << rankId << " to local rank:" << options_.rankId << " use protocol:" << opType
-                                        << " skip host connect");
-            continue;
-        }
+        // uint32_t opType = tagManager_->GetRank2RankOpType(rankId, options_.rankId);
+        // if (!(opType & HOST_PROTOCOL)) {
+        //     BM_LOG_DEBUG("remote rank:" << rankId << " to local rank:" << options_.rankId << " use protocol:" << opType
+        //                                 << " skip host connect");
+        //     continue;
+        // }
         TransportRankPrepareInfo info{};
         std::vector<std::string> nicVec = StrUtil::Split(item.second.nic, NIC_DELIMITER);
         for (const auto &nic : nicVec) {
             if (StrUtil::StartWith(nic, HOST_TRANSPORT_TYPE)) {
                 info.nic = nic.substr(HOST_TRANSPORT_TYPE.length());
+            }
+            if (StrUtil::StartWith(nic, DEVICE_TRANSPORT_TYPE)) {
+                info.nic = nic.substr(DEVICE_TRANSPORT_TYPE.length());
             }
         }
 
@@ -271,6 +283,7 @@ void ComposeTransportManager::GetHostPrepareOptions(const HybmTransPrepareOption
             ReadHcomMemoryKey(key, tmp);
             info.memKeys.emplace_back(tmp);
         }
+        info.privateData = item.second.privateData;
         hostOptions.options.emplace(rankId, info);
     }
 }
@@ -281,15 +294,18 @@ void ComposeTransportManager::GetDevicePrepareOptions(const HybmTransPrepareOpti
     auto options = param.options;
     for (const auto &item : options) {
         auto rankId = item.first;
-        uint32_t opType = tagManager_->GetRank2RankOpType(rankId, options_.rankId);
-        if (!(opType & DEVICE_PROTOCOL)) {
-            BM_LOG_DEBUG("remote rank:" << rankId << " to local rank:" << options_.rankId << " use protocol:" << opType
-                                        << " skip device connect");
-            continue;
-        }
+        // uint32_t opType = tagManager_->GetRank2RankOpType(rankId, options_.rankId);
+        // if (!(opType & DEVICE_PROTOCOL)) {
+        //     BM_LOG_DEBUG("remote rank:" << rankId << " to local rank:" << options_.rankId << " use protocol:" << opType
+        //                                 << " skip device connect");
+        //     continue;
+        // }
         TransportRankPrepareInfo info{};
         std::vector<std::string> nicVec = StrUtil::Split(item.second.nic, NIC_DELIMITER);
         for (const auto &nic : nicVec) {
+            if (StrUtil::StartWith(nic, HOST_TRANSPORT_TYPE)) {
+                info.nic = nic.substr(HOST_TRANSPORT_TYPE.length());
+            }
             if (StrUtil::StartWith(nic, DEVICE_TRANSPORT_TYPE)) {
                 info.nic = nic.substr(DEVICE_TRANSPORT_TYPE.length());
             }

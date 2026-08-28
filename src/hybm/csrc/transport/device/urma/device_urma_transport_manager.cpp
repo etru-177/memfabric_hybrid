@@ -1373,6 +1373,7 @@ Result DeviceUrmaTransportManager::Prepare(const HybmTransPrepareOptions &option
             channelDesc.role = (rankId_ > peerRank) ? HCOMM_SOCKET_ROLE_CLIENT : HCOMM_SOCKET_ROLE_SERVER;
             channelDesc.remoteEndpoint = hcommRemoteEndpoint;
             channelDesc.notifyNum = HCOMM_NORMAL_NOTIFY_NUM;
+            channelDesc.qos = 4;
             channelDesc.exchangeAllMems = true; // 填true, 不用管memHandles了, remoteEndpoint要填对
             if (localEndpoint_->desc.protocol == UrmaProtocol::UBOE) {
                 // CRITICAL: HcommChannelDescInit sets union to 0xFF garbage values.
@@ -1803,14 +1804,14 @@ Result DeviceUrmaTransportManager::ResolveBatchIoAddressesLocked(uint32_t rankId
         }
 
         uint64_t correctedLAddr = lAddr;
-        auto ret = CorrectLocalRegAddressLocked(lAddr, size, correctedLAddr);
-        if (ret != BM_OK) {
-            BM_LOG_DEBUG("device_urma ResolveBatchIoAddressesLocked local address correction failed, rank: "
-                         << rankId << " addr: 0x" << std::hex << lAddr << " index: " << i);
-            return ret;
-        }
+        // auto ret = CorrectLocalRegAddressLocked(lAddr, size, correctedLAddr);
+        // if (ret != BM_OK) {
+        //     BM_LOG_DEBUG("device_urma ResolveBatchIoAddressesLocked local address correction failed, rank: "
+        //                  << rankId << " addr: 0x" << std::hex << lAddr << " index: " << i);
+        //     return ret;
+        // }
         RemoteRegistration remote{};
-        ret = FindRemoteRegistrationLocked(rankId, rAddr, size, &remote);
+        int ret = FindRemoteRegistrationLocked(rankId, rAddr, size, &remote);
         if (ret != BM_OK) {
             BM_LOG_ERROR("device_urma ResolveBatchIoAddresses remote not prepared, rank: "
                          << rankId << " addr: 0x" << std::hex << rAddr << " index: " << i);

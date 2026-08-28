@@ -130,6 +130,11 @@ EndpointDesc ToHcommEndpointDesc(const UrmaEndpointDesc &desc)
     endpoint.commAddr.type = desc.type;
     std::memcpy(endpoint.commAddr.raws, desc.raws, sizeof(endpoint.commAddr.raws));
 
+    if (desc.locType == ENDPOINT_LOC_TYPE_HOST) {
+        endpoint.loc.locType = ENDPOINT_LOC_TYPE_HOST;
+        endpoint.loc.host.id = desc.hostId;
+        return endpoint;
+    }
     endpoint.loc.locType = ENDPOINT_LOC_TYPE_DEVICE; // 暂时只支持DEVICE，后续RoCE再做HOST
     endpoint.loc.device.devPhyId = desc.devPhyId;
     endpoint.loc.device.superDevId = desc.superDevId;

@@ -25,6 +25,7 @@ void DefineAccOffloadConfig(py::module_ &m)
     py::enum_<offload_scene_t>(m, "Scene")
         .value("LOCAL", OFFLOAD_SCENE_LOCAL)
         .value("SHARED", OFFLOAD_SCENE_SHARED)
+        .value("LOCAL_URMA", OFFLOAD_SCENE_LOCAL_URMA)
         .export_values();
 
     py::class_<offload_config_t>(m, "OffloadConfig")

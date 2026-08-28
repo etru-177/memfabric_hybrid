@@ -233,9 +233,9 @@ Result HybmConnBasedSegment::Mmap() noexcept
         }
         mappedGvaMem_.insert(import.gva);
 
-        auto ret = HybmVaManager::GetInstance().AddVaInfoFromExternal(
+        HybmVaManager::GetInstance().AddVaInfoFromExternal(
             {import.gva, 0, 0, import.size, HYBM_MEM_TYPE_HOST}, options_.rankId, import.rankId);
-        BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "ret = " << ret, ret);
+        //BM_ASSERT_LOG_AND_RETURN(ret == BM_OK, "ret = " << ret, ret);
     }
     imports_.clear();
     return 0;

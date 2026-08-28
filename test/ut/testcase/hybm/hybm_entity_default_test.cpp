@@ -81,6 +81,12 @@ constexpr int32_t TEST_DEVICE_ID_QUANT_NULL = 2506;
 constexpr int32_t TEST_DEVICE_ID_QUANT_FAIL = 2507;
 constexpr int32_t TEST_DEVICE_ID_QUANT_SUCCESS = 2508;
 constexpr int32_t TEST_DEVICE_ID_WAIT_OP = 2509;
+constexpr int32_t TEST_DEVICE_ID_BATCH_RAW_NULL = 2510;
+constexpr int32_t TEST_DEVICE_ID_BATCH_RAW_WRITE = 2511;
+constexpr int32_t TEST_DEVICE_ID_BATCH_RAW_READ = 2512;
+constexpr int32_t TEST_DEVICE_ID_BATCH_RAW_UNSUPP = 2513;
+constexpr int32_t TEST_DEVICE_ID_BATCH_RAW_WRITE_FAIL = 2514;
+constexpr int32_t TEST_DEVICE_ID_BATCH_RAW_SYNC_FAIL = 2515;
 
 // Test constants for memory sizes
 constexpr uint64_t TEST_SMALL_SIZE = 1024;
@@ -1286,6 +1292,221 @@ TEST_F(HybmEntityDefaultTest, BatchCopyData)
     // 测试批量数据复制（未初始化的情况）
     int32_t batchCopyRet = entity.BatchCopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST, nullptr, 0);
     EXPECT_EQ(batchCopyRet, BM_NOT_INITIALIZED);
+}
+
+class FakeTransportManagerCaptureBatch : public FakeTransportManager {
+public:
+    ock::mf::Result WriteRemoteBatchAsync(uint32_t rankId, const ock::mf::CopyDescriptor &descriptor) override
+    {
+        writeBatchCalled++;
+        capturedRankId = rankId;
+        capturedLocal = descriptor.localAddrs;
+        capturedRemote = descriptor.globalAddrs;
+        capturedCounts = descriptor.counts;
+        return writeRet;
+    }
+    ock::mf::Result ReadRemoteBatchAsync(uint32_t rankId, const ock::mf::CopyDescriptor &descriptor) override
+    {
+        readBatchCalled++;
+        capturedRankId = rankId;
+        capturedLocal = descriptor.localAddrs;
+        capturedRemote = descriptor.globalAddrs;
+        capturedCounts = descriptor.counts;
+        return readRet;
+    }
+    ock::mf::Result Synchronize(uint32_t rankId) override
+    {
+        syncCalled++;
+        syncRankId = rankId;
+        return syncRet;
+    }
+
+    int writeBatchCalled{0};
+    int readBatchCalled{0};
+    int syncCalled{0};
+    uint32_t capturedRankId{0};
+    uint32_t syncRankId{0};
+    std::vector<void *> capturedLocal{};
+    std::vector<void *> capturedRemote{};
+    std::vector<uint64_t> capturedCounts{};
+    ock::mf::Result writeRet{BM_OK};
+    ock::mf::Result readRet{BM_OK};
+    ock::mf::Result syncRet{BM_OK};
+};
+
+static void FillRawBatchParams(hybm_batch_raw_copy_params &params, void **localAddrs, void **remoteAddrs,
+                               uint64_t *sizes, uint32_t batchSize, uint32_t rankId)
+{
+    params.rankId = rankId;
+    params.localAddrs = localAddrs;
+    params.remoteAddrs = remoteAddrs;
+    params.dataSizes = sizes;
+    params.batchSize = batchSize;
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_NotInitialized_ReturnError)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_NULL;
+    ock::mf::MemEntityDefault entity(deviceId);
+    hybm_batch_raw_copy_params params{};
+    params.rankId = TEST_RANK_1;
+    params.batchSize = TEST_BATCH_SIZE_1;
+    auto ret = entity.BatchRawCopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_NOT_INITIALIZED);
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_TransportNull_ReturnError)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_NULL;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    entity.transportManager_ = nullptr;
+
+    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    hybm_batch_raw_copy_params params{};
+    void *localAddrs[1] = {reinterpret_cast<void *>(0x10)};
+    void *remoteAddrs[1] = {reinterpret_cast<void *>(0x20)};
+    uint64_t sizes[TEST_BATCH_SIZE_1] = {TEST_DATA_SIZE};
+    FillRawBatchParams(params, localAddrs, remoteAddrs, sizes, TEST_BATCH_SIZE_1, TEST_RANK_1);
+
+    auto ret = entity.BatchRawCopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_NOT_INITIALIZED);
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_Write_CallsWriteBatchAndSync)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_WRITE;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    auto fake = std::make_shared<FakeTransportManagerCaptureBatch>();
+    entity.transportManager_ = fake;
+
+    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    hybm_batch_raw_copy_params params{};
+    void *localAddrs[TEST_BATCH_SIZE_2] = {reinterpret_cast<void *>(0x10), reinterpret_cast<void *>(0x30)};
+    void *remoteAddrs[TEST_BATCH_SIZE_2] = {reinterpret_cast<void *>(0x20), reinterpret_cast<void *>(0x40)};
+    uint64_t sizes[TEST_BATCH_SIZE_2] = {TEST_DATA_SIZE, TEST_DATA_SIZE_2};
+    FillRawBatchParams(params, localAddrs, remoteAddrs, sizes, TEST_BATCH_SIZE_2, TEST_RANK_1);
+
+    auto ret = entity.BatchRawCopyData(params, HYBM_LOCAL_DEVICE_TO_GLOBAL_DEVICE);
+    EXPECT_EQ(ret, BM_OK);
+    EXPECT_EQ(fake->writeBatchCalled, 1);
+    EXPECT_EQ(fake->readBatchCalled, 0);
+    EXPECT_EQ(fake->syncCalled, 1);
+    EXPECT_EQ(fake->capturedRankId, TEST_RANK_1);
+    EXPECT_EQ(fake->syncRankId, TEST_RANK_1);
+    EXPECT_EQ(fake->capturedLocal.size(), TEST_BATCH_SIZE_2);
+    EXPECT_EQ(fake->capturedRemote.size(), TEST_BATCH_SIZE_2);
+    EXPECT_EQ(fake->capturedCounts.size(), TEST_BATCH_SIZE_2);
+    EXPECT_EQ(fake->capturedCounts[0], TEST_DATA_SIZE);
+    EXPECT_EQ(fake->capturedCounts[1], TEST_DATA_SIZE_2);
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_Read_CallsReadBatchAndSync)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_READ;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    auto fake = std::make_shared<FakeTransportManagerCaptureBatch>();
+    entity.transportManager_ = fake;
+
+    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    hybm_batch_raw_copy_params params{};
+    void *localAddrs[TEST_BATCH_SIZE_1] = {reinterpret_cast<void *>(0x20)};
+    void *remoteAddrs[TEST_BATCH_SIZE_1] = {reinterpret_cast<void *>(0x10)};
+    uint64_t sizes[TEST_BATCH_SIZE_1] = {TEST_DATA_SIZE};
+    FillRawBatchParams(params, localAddrs, remoteAddrs, sizes, TEST_BATCH_SIZE_1, TEST_RANK_2);
+
+    auto ret = entity.BatchRawCopyData(params, HYBM_GLOBAL_DEVICE_TO_LOCAL_DEVICE);
+    EXPECT_EQ(ret, BM_OK);
+    EXPECT_EQ(fake->readBatchCalled, 1);
+    EXPECT_EQ(fake->writeBatchCalled, 0);
+    EXPECT_EQ(fake->syncCalled, 1);
+    EXPECT_EQ(fake->capturedRankId, TEST_RANK_2);
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_UnsupportedDirection_ReturnNotSupported)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_UNSUPP;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    auto fake = std::make_shared<FakeTransportManagerCaptureBatch>();
+    entity.transportManager_ = fake;
+
+    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    hybm_batch_raw_copy_params params{};
+    void *localAddrs[1] = {reinterpret_cast<void *>(0x10)};
+    void *remoteAddrs[1] = {reinterpret_cast<void *>(0x20)};
+    uint64_t sizes[TEST_BATCH_SIZE_1] = {TEST_DATA_SIZE};
+    FillRawBatchParams(params, localAddrs, remoteAddrs, sizes, TEST_BATCH_SIZE_1, TEST_RANK_1);
+
+    auto ret = entity.BatchRawCopyData(params, HYBM_GLOBAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_NOT_SUPPORTED);
+    EXPECT_EQ(fake->writeBatchCalled, 0);
+    EXPECT_EQ(fake->readBatchCalled, 0);
+    EXPECT_EQ(fake->syncCalled, 0);
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_WriteBatchFail_ReturnError)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_WRITE_FAIL;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    auto fake = std::make_shared<FakeTransportManagerCaptureBatch>();
+    fake->writeRet = BM_ERROR;
+    entity.transportManager_ = fake;
+
+    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    hybm_batch_raw_copy_params params{};
+    void *localAddrs[1] = {reinterpret_cast<void *>(0x10)};
+    void *remoteAddrs[1] = {reinterpret_cast<void *>(0x20)};
+    uint64_t sizes[TEST_BATCH_SIZE_1] = {TEST_DATA_SIZE};
+    FillRawBatchParams(params, localAddrs, remoteAddrs, sizes, TEST_BATCH_SIZE_1, TEST_RANK_1);
+
+    auto ret = entity.BatchRawCopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_ERROR);
+    EXPECT_EQ(fake->writeBatchCalled, 1);
+    EXPECT_EQ(fake->syncCalled, 0);
+}
+
+TEST_F(HybmEntityDefaultTest, BatchRawCopyData_SyncFail_ReturnError)
+{
+    int32_t deviceId = TEST_DEVICE_ID_BATCH_RAW_SYNC_FAIL;
+    ock::mf::MemEntityDefault entity(deviceId);
+    entity.initialized_ = true;
+    auto fake = std::make_shared<FakeTransportManagerCaptureBatch>();
+    fake->syncRet = BM_ERROR;
+    entity.transportManager_ = fake;
+
+    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
+        .stubs()
+        .will(returnValue(static_cast<int32_t>(BM_OK)));
+
+    hybm_batch_raw_copy_params params{};
+    void *localAddrs[1] = {reinterpret_cast<void *>(0x10)};
+    void *remoteAddrs[1] = {reinterpret_cast<void *>(0x20)};
+    uint64_t sizes[TEST_BATCH_SIZE_1] = {TEST_DATA_SIZE};
+    FillRawBatchParams(params, localAddrs, remoteAddrs, sizes, TEST_BATCH_SIZE_1, TEST_RANK_1);
+
+    auto ret = entity.BatchRawCopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_ERROR);
+    EXPECT_EQ(fake->writeBatchCalled, 1);
+    EXPECT_EQ(fake->syncCalled, 1);
 }
 
 // 测试 MemEntityDefault 等待操作

@@ -124,6 +124,16 @@ public:
         return BM_OK;
     }
 
+    int32_t BatchRawCopyData(hybm_batch_raw_copy_params &params,
+                             hybm_data_copy_direction direction) noexcept override
+    {
+        batchRawCopyCalled = true;
+        batchRawCopyDirection = direction;
+        batchRawCopyRankId = params.rankId;
+        batchRawCopySize = params.batchSize;
+        return batchRawCopyRet;
+    }
+
     int32_t Wait() noexcept override
     {
         waitCalled = true;
@@ -149,10 +159,15 @@ public:
     bool batchCopyCalled = false;
     bool waitCalled = false;
     bool addressInRange = true;
+    bool batchRawCopyCalled = false;
     hybm_data_copy_direction copyDirection = HYBM_DATA_COPY_DIRECTION_BUTT;
     hybm_data_copy_direction batchCopyDirection = HYBM_DATA_COPY_DIRECTION_BUTT;
+    hybm_data_copy_direction batchRawCopyDirection = HYBM_DATA_COPY_DIRECTION_BUTT;
     uint64_t copySize = 0;
     uint32_t batchCopySize = 0;
+    uint32_t batchRawCopyRankId = 0;
+    uint32_t batchRawCopySize = 0;
+    int32_t batchRawCopyRet = 0;
 };
 
 class HybmDataOpEntryTest : public testing::Test {
@@ -410,6 +425,102 @@ TEST_F(HybmDataOpEntryTest, hybm_data_batch_copy_invalid_direction)
     params.batchSize = 2;
 
     auto ret = hybm_data_batch_copy(mockEntity.get(), &params, HYBM_DATA_COPY_DIRECTION_BUTT, nullptr, 0);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_success)
+{
+    void *localAddrs[2] = {reinterpret_cast<void *>(HYBM_GVM_START_ADDR),
+                           reinterpret_cast<void *>(HYBM_GVM_START_ADDR + 0x2000)};
+    void *remoteAddrs[2] = {reinterpret_cast<void *>(HYBM_GVM_START_ADDR + 0x1000),
+                            reinterpret_cast<void *>(HYBM_GVM_START_ADDR + 0x3000)};
+    uint64_t dataSizes[2] = {1024, 2048};
+
+    hybm_batch_raw_copy_params params{};
+    params.rankId = 1;
+    params.localAddrs = localAddrs;
+    params.remoteAddrs = remoteAddrs;
+    params.dataSizes = dataSizes;
+    params.batchSize = 2;
+
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), &params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, 0);
+    EXPECT_TRUE(mockEntity->batchRawCopyCalled);
+    EXPECT_EQ(mockEntity->batchRawCopyDirection, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(mockEntity->batchRawCopyRankId, 1U);
+    EXPECT_EQ(mockEntity->batchRawCopySize, 2U);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_null_entity)
+{
+    hybm_batch_raw_copy_params params{};
+    auto ret = hybm_data_batch_raw_copy(nullptr, &params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_null_params)
+{
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), nullptr, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_null_local_addrs)
+{
+    hybm_batch_raw_copy_params params{};
+    params.localAddrs = nullptr;
+    params.remoteAddrs = reinterpret_cast<void **>(0x2000);
+    params.dataSizes = reinterpret_cast<uint64_t *>(0x3000);
+    params.batchSize = 2;
+
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), &params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_null_remote_addrs)
+{
+    hybm_batch_raw_copy_params params{};
+    params.localAddrs = reinterpret_cast<void **>(0x1000);
+    params.remoteAddrs = nullptr;
+    params.dataSizes = reinterpret_cast<uint64_t *>(0x3000);
+    params.batchSize = 2;
+
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), &params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_null_data_sizes)
+{
+    hybm_batch_raw_copy_params params{};
+    params.localAddrs = reinterpret_cast<void **>(0x1000);
+    params.remoteAddrs = reinterpret_cast<void **>(0x2000);
+    params.dataSizes = nullptr;
+    params.batchSize = 2;
+
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), &params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_zero_batch_size)
+{
+    hybm_batch_raw_copy_params params{};
+    params.localAddrs = reinterpret_cast<void **>(0x1000);
+    params.remoteAddrs = reinterpret_cast<void **>(0x2000);
+    params.dataSizes = reinterpret_cast<uint64_t *>(0x3000);
+    params.batchSize = 0;
+
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), &params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST);
+    EXPECT_EQ(ret, BM_INVALID_PARAM);
+}
+
+TEST_F(HybmDataOpEntryTest, hybm_data_batch_raw_copy_invalid_direction)
+{
+    hybm_batch_raw_copy_params params{};
+    params.localAddrs = reinterpret_cast<void **>(0x1000);
+    params.remoteAddrs = reinterpret_cast<void **>(0x2000);
+    params.dataSizes = reinterpret_cast<uint64_t *>(0x3000);
+    params.batchSize = 2;
+
+    auto ret = hybm_data_batch_raw_copy(mockEntity.get(), &params, HYBM_DATA_COPY_DIRECTION_BUTT);
     EXPECT_EQ(ret, BM_INVALID_PARAM);
 }
 

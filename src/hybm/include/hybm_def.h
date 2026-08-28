@@ -184,6 +184,14 @@ typedef struct {
 } hybm_batch_copy_params;
 
 typedef struct {
+    uint32_t rankId;          /* remote rank id to copy with */
+    void **localAddrs;        /* local addresses */
+    void **remoteAddrs;       /* remote (global) addresses */
+    const uint64_t *dataSizes;
+    uint32_t batchSize;
+} hybm_batch_raw_copy_params;
+
+typedef struct {
     void **sources;
     void **destinations;
     const uint64_t *dataSizes;

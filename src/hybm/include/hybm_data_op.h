@@ -49,6 +49,22 @@ int32_t hybm_data_batch_copy(hybm_entity_t e, hybm_batch_copy_params *params, hy
                              void *stream, uint32_t flags);
 
 /**
+ * @brief batch copy data directly through the transport without any address range validation.
+ *        Local-to-global directions issue WriteRemoteBatchAsync, global-to-local directions issue
+ *        ReadRemoteBatchAsync; both are followed by Synchronize on the given rankId.
+ * @param e                [in] entity created by hybm_create_entity
+ * @param params.rankId           [in] remote rank id to copy with
+ * @param params.localAddrs      [in] local addresses
+ * @param params.remoteAddrs      [in] remote (global) addresses
+ * @param params.dataSizes        [in] copy memory size in bytes for each entry
+ * @param params.batchSize        [in] number of entries
+ * @param direction        [in] copy direction, must be local<->global (G2G/AUTO not supported)
+ * @return 0 if successful
+ */
+int32_t hybm_data_batch_raw_copy(hybm_entity_t e, hybm_batch_raw_copy_params *params,
+                                hybm_data_copy_direction direction);
+
+/**
  * @brief wait data_copy_op_async finish .
  * @param e                [in] entity created by hybm_create_entity
  * @return 0 if reserved successful

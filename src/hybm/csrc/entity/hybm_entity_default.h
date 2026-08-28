@@ -79,6 +79,7 @@ public:
                      uint32_t flags) noexcept override;
     int32_t BatchCopyData(hybm_batch_copy_params &params, hybm_data_copy_direction direction, void *stream,
                           uint32_t flags) noexcept override;
+    int32_t BatchRawCopyData(hybm_batch_raw_copy_params &params, hybm_data_copy_direction direction) noexcept override;
     int32_t QuantCopy(hybm_quant_copy_params &params) noexcept override;
     int32_t Wait() noexcept override;
     bool SdmaReaches(uint32_t remoteRank) const noexcept override;

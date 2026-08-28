@@ -76,7 +76,8 @@ MemSegmentPtr MemSegment::Create(const MemSegmentOptions &options, int entityId)
         return nullptr;
     }
     auto CONN_BASED_SEGMENT =
-        HYBM_DOP_TYPE_DEVICE_RDMA | HYBM_DOP_TYPE_DEVICE_URMA | HYBM_DOP_TYPE_DEVICE_UBOE | HYBM_DOP_TYPE_HOST_TCP;
+        HYBM_DOP_TYPE_DEVICE_RDMA | HYBM_DOP_TYPE_DEVICE_URMA | HYBM_DOP_TYPE_DEVICE_UBOE | HYBM_DOP_TYPE_HOST_TCP|
+        HYBM_DOP_TYPE_HOST_URMA | HYBM_DOP_TYPE_HOST_RDMA;
     MemSegmentPtr tmpSeg;
     switch (options.segType) {
         case HYBM_MST_HBM:

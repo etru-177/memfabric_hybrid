@@ -11,6 +11,7 @@
  */
 #include "acc_offload_entry_manager.h"
 #include "acc_offload_local_dram_entry.h"
+#include "acc_offload_local_urma_entry.h"
 #include "acc_offload_shared_dram_entry.h"
 #include "acc_offload_define.h"
 
@@ -42,6 +43,9 @@ int32_t AccOffloadEntryManager::Initialize(const offload_config_t &config)
             break;
         case OFFLOAD_SCENE_SHARED:
             entry_ = std::make_unique<AccOffloadSharedDramEntry>();
+            break;
+        case OFFLOAD_SCENE_LOCAL_URMA:
+            entry_ = std::make_unique<AccOffloadLocalUrmaEntry>();
             break;
         default:
             OFFLOAD_LOG_ERROR("invalid scene: " << static_cast<uint32_t>(config.scene));

@@ -86,6 +86,8 @@ struct UrmaEndpointDesc {
     UrmaProtocol protocol{UrmaProtocol::RESERVED};
     CommAddrType type{COMM_ADDR_TYPE_RESERVED};
     uint8_t raws[URMA_ENDPOINT_RAW_LEN]{}; // CommAddr.raws
+    EndpointLocType locType{ENDPOINT_LOC_TYPE_DEVICE};
+    uint32_t hostId{0};
 };
 
 struct UrmaCommMem {
