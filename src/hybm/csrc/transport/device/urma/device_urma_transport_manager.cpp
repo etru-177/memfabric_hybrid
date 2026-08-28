@@ -18,6 +18,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include <numeric>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -30,6 +31,7 @@
 #include "dl_hcomm_api.h"
 #include "hybm_batch_transfer.h"
 #include "hybm_logger.h"
+#include "hybm_ptracer.h"
 #include "hybm_stream_manager.h"
 #include "device_urma_eid_reader.h"
 #include "hybm_va_manager.h"
@@ -128,14 +130,10 @@ bool ToUrmaEndpointDesc(const EndpointDesc &hcommDesc, UrmaEndpointDesc &urmaDes
     return true;
 }
 
-bool ContainsAddressRange(uint64_t outerAddr, uint64_t outerSize, uint64_t innerAddr, uint64_t innerSize)
+inline bool ContainsAddressRange(const uint64_t &outerAddr, const uint64_t &outerSize, const uint64_t &innerAddr,
+                                 const uint64_t &innerSize)
 {
-    uint64_t outerEnd = 0;
-    uint64_t innerEnd = 0;
-    const UrmaCommMem outer{outerAddr, outerSize, UrmaMemoryType::HOST_DRAM};
-    const UrmaCommMem inner{innerAddr, innerSize, UrmaMemoryType::HOST_DRAM};
-    return GetRangeEnd(outer, outerEnd) && GetRangeEnd(inner, innerEnd) && outerAddr <= innerAddr &&
-           outerEnd >= innerEnd;
+    return outerAddr <= innerAddr && (outerAddr + outerSize) >= (innerAddr + innerSize);
 }
 
 // Returns BM_INVALID_PARAM on magic/version/payloadLen/capacity mismatch.
@@ -411,7 +409,7 @@ Result DeviceUrmaTransportManager::OpenEndpointResourcesLocked(const TransportOp
 
 Result DeviceUrmaTransportManager::OpenDevice(const TransportOptions &options)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     if (opened_) {
         return BM_OK;
     }
@@ -469,6 +467,8 @@ DeviceUrmaTransportManager::CompletionContext *DeviceUrmaTransportManager::Looku
 {
     // Scan TLS bindings for a valid (owner matches this manager generation, context alive)
     auto &bindings = GetTlsBindings();
+    CompletionContext *foundCtx = nullptr;
+    TP_TRACE_BEGIN(TP_HYBM_URMA_TLS_SCAN);
     for (auto &binding : bindings) {
         auto ownerSp = binding.owner.lock();
         if (!ownerSp || ownerSp != owner_) {
@@ -478,7 +478,12 @@ DeviceUrmaTransportManager::CompletionContext *DeviceUrmaTransportManager::Looku
         if (!ctxSp) {
             continue;
         }
-        return ctxSp.get();
+        foundCtx = ctxSp.get();
+        break;
+    }
+    TP_TRACE_END(TP_HYBM_URMA_TLS_SCAN, foundCtx == nullptr ? BM_ERROR : BM_OK);
+    if (foundCtx != nullptr) {
+        return foundCtx;
     }
 
     // create and publish
@@ -492,6 +497,7 @@ DeviceUrmaTransportManager::CompletionContext *DeviceUrmaTransportManager::Looku
 
 Result DeviceUrmaTransportManager::CreateAndPublishContextLocked(CompletionContext *&outRaw)
 {
+    std::lock_guard<std::shared_mutex> guard(registryMutex_);
     std::shared_ptr<CompletionContext> ctx;
     ctx = std::make_shared<CompletionContext>();
     void *stream = HybmStreamManager::GetThreadAclStream();
@@ -737,25 +743,32 @@ Result DeviceUrmaTransportManager::SynchronizeContextLocked(void *notify, void *
     }
 
     if (hasInFlight) {
+        TP_TRACE_BEGIN(TP_HYBM_URMA_WAIT_RESET_NOTIFY);
         auto notifyRet = DlAclApi::AclrtWaitAndResetNotify(notify, stream, HYBM_DEVICE_KERNEL_TIMEOUT_S);
+        TP_TRACE_END(TP_HYBM_URMA_WAIT_RESET_NOTIFY, notifyRet);
         if (notifyRet != BM_OK) {
             BM_LOG_ERROR("device_urma SynchronizeContext AclrtWaitAndResetNotify failed, notify=" << notify << " ret="
                                                                                                   << notifyRet);
             return notifyRet;
         }
+        TP_TRACE_BEGIN(TP_HYBM_URMA_WAIT_NOTIFY_SYNC_STREAM);
         auto syncRet = DlAclApi::AclrtSynchronizeStream(stream);
+        TP_TRACE_END(TP_HYBM_URMA_WAIT_NOTIFY_SYNC_STREAM, syncRet);
         if (syncRet != BM_OK) {
             BM_LOG_ERROR("device_urma SynchronizeContext AclrtSynchronizeStream failed, syncRet="
                          << syncRet << ", notify=" << notify << ", stream=" << stream);
             return syncRet;
         }
     }
-    return ReleasePendingTransfersLocked(pendingTransfers);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_RELEASE_PENDING_TRANSFERS);
+    auto ret = ReleasePendingTransfersLocked(pendingTransfers);
+    TP_TRACE_END(TP_HYBM_URMA_RELEASE_PENDING_TRANSFERS, ret);
+    return ret;
 }
 
 Result DeviceUrmaTransportManager::CloseDevice()
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     if (!opened_) {
         return BM_OK;
     }
@@ -899,28 +912,25 @@ Result DeviceUrmaTransportManager::CleanupLocalRegistrationsLocked()
 Result DeviceUrmaTransportManager::FindLocalRegistrationLocked(uint64_t addr, uint64_t size,
                                                                LocalRegistration *registration) const
 {
-    if (addr == 0) {
-        BM_LOG_ERROR("device_urma FindLocalRegistrationLocked: addr is 0");
+    auto pos = localRegistrations_.upper_bound(addr);
+    if (pos == localRegistrations_.begin()) {
+        BM_LOG_ERROR("device_urma FindLocalRegistrationLocked: no registration found, addr: " << VaToStr(addr)
+                                                                                              << " size: " << size);
         return BM_INVALID_PARAM;
     }
-    if (size == 0) {
-        return BM_OK;
-    }
-    // Validate that (addr, size) forms a valid non-wrapping address range.
-    if (!ContainsAddressRange(addr, size, addr, size)) {
-        BM_LOG_ERROR("device_urma FindLocalRegistrationLocked: address range check failed, addr=" << VaToStr(addr)
-                                                                                                  << " size=" << size);
+    --pos;
+
+    const bool containsRange = ContainsAddressRange(pos->second.mr.addr, pos->second.mr.size, addr, size);
+    if (!containsRange) {
+        BM_LOG_ERROR("device_urma FindLocalRegistrationLocked: registration does not contain range, addr: "
+                     << VaToStr(addr) << " size: " << size << " registeredAddr: " << VaToStr(pos->second.mr.addr)
+                     << " registeredSize: " << pos->second.mr.size);
         return BM_INVALID_PARAM;
     }
-    for (const auto &item : localRegistrations_) {
-        if (ContainsAddressRange(item.second.mr.addr, item.second.mr.size, addr, size)) {
-            if (registration != nullptr) {
-                *registration = item.second;
-            }
-            return BM_OK;
-        }
+    if (registration != nullptr) {
+        *registration = pos->second;
     }
-    return BM_INVALID_PARAM;
+    return BM_OK;
 }
 
 Result DeviceUrmaTransportManager::CorrectLocalRegAddressLocked(uint64_t addr, uint64_t size,
@@ -945,14 +955,6 @@ Result DeviceUrmaTransportManager::CorrectLocalRegAddressLocked(uint64_t addr, u
                      << rankId_ << " deviceVa: " << VaToStr(registration.deviceVa) << " offset: " << offset);
         return BM_INVALID_PARAM;
     }
-    // Verify full [corrected, corrected + size) range does not overflow
-    if (!ContainsAddressRange(corrected, size, corrected, size)) {
-        BM_LOG_ERROR("device_urma CorrectLocalRegAddressLocked: range overflow, rankId: "
-                     << rankId_ << " addr: " << VaToStr(addr) << " size: " << size
-                     << " mr.addr: " << VaToStr(registration.mr.addr) << " deviceVa: " << VaToStr(registration.deviceVa)
-                     << " offset: " << offset);
-        return BM_INVALID_PARAM;
-    }
     correctedAddr = corrected;
     return BM_OK;
 }
@@ -960,24 +962,13 @@ Result DeviceUrmaTransportManager::CorrectLocalRegAddressLocked(uint64_t addr, u
 Result DeviceUrmaTransportManager::FindRemoteRegistrationLocked(uint32_t rankId, uint64_t addr, uint64_t size,
                                                                 RemoteRegistration *registration) const
 {
-    if (rankId >= rankCount_) {
-        return BM_INVALID_PARAM;
-    }
-    if (size == 0) {
-        return BM_OK;
-    }
     const auto rankIt = remoteRanks_.find(rankId);
     if (rankIt == remoteRanks_.end()) {
         return BM_NOT_CONNECTED;
     }
-    // Validate that (addr, size) forms a valid non-wrapping address range.
-    if (!ContainsAddressRange(addr, size, addr, size)) {
-        BM_LOG_ERROR("device_urma FindRemoteRegistrationLocked: address range check failed, addr=0x"
-                     << std::hex << addr << " size=0x" << size << std::dec);
-        return BM_INVALID_PARAM;
-    }
     for (const auto &remote : rankIt->second.imports) {
-        if (ContainsAddressRange(remote.addr, remote.size, addr, size)) {
+        const bool containsRange = ContainsAddressRange(remote.addr, remote.size, addr, size);
+        if (containsRange) {
             if (registration != nullptr) {
                 *registration = remote;
             }
@@ -989,7 +980,7 @@ Result DeviceUrmaTransportManager::FindRemoteRegistrationLocked(uint32_t rankId,
 
 Result DeviceUrmaTransportManager::RegisterMemoryRegion(const TransportMemoryRegion &mr)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     BM_VALIDATE_RETURN(mr.addr != 0 && mr.size != 0, "device_urma RegisterMemoryRegion: mr.addr or mr.size is 0",
                        BM_INVALID_PARAM);
@@ -1055,7 +1046,7 @@ Result DeviceUrmaTransportManager::RegisterMemoryRegion(const TransportMemoryReg
 
 Result DeviceUrmaTransportManager::UnregisterMemoryRegion(uint64_t addr)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     auto item = localRegistrations_.find(addr);
     if (item == localRegistrations_.end()) {
@@ -1082,13 +1073,13 @@ Result DeviceUrmaTransportManager::UnregisterMemoryRegion(uint64_t addr)
 
 bool DeviceUrmaTransportManager::QueryHasRegistered(uint64_t addr, uint64_t size)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::shared_lock<std::shared_mutex> guard(mutex_);
     return FindLocalRegistrationLocked(addr, size, nullptr) == BM_OK;
 }
 
 Result DeviceUrmaTransportManager::QueryMemoryKey(uint64_t addr, TransportMemoryKey &key)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::shared_lock<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     LocalRegistration registration{};
     auto ret = FindLocalRegistrationLocked(addr, 1, &registration);
@@ -1334,7 +1325,7 @@ Result DeviceUrmaTransportManager::ImportRemoteMemKeysLocked(uint32_t peerRank, 
 
 Result DeviceUrmaTransportManager::Prepare(const HybmTransPrepareOptions &options)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     BM_VALIDATE_RETURN(localEndpoint_ != nullptr,
                        "evice_urma Prepare failed: localEndpoint_ is null (OpenDevice may not have completed)",
@@ -1514,6 +1505,7 @@ Result DeviceUrmaTransportManager::RemoveRankLocked(uint32_t rankId)
 
 bool DeviceUrmaTransportManager::IsAnyRegistryContextPendingForRank(uint32_t rankId) const
 {
+    std::shared_lock<std::shared_mutex> guard(registryMutex_);
     for (const auto &ctxSp : registry_) {
         if (!ctxSp) {
             continue;
@@ -1529,7 +1521,7 @@ bool DeviceUrmaTransportManager::IsAnyRegistryContextPendingForRank(uint32_t ran
 
 Result DeviceUrmaTransportManager::RemoveRanks(const std::vector<uint32_t> &removedRanks)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     BM_LOG_INFO("device_urma RemoveRanks called, localRank: " << rankId_ << " ranks: " << removedRanks.size()
                                                               << " opened: " << opened_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
@@ -1583,7 +1575,7 @@ Result DeviceUrmaTransportManager::UpdateRankOptions(const HybmTransPrepareOptio
 {
     bool needFallback = false;
     {
-        std::lock_guard<std::mutex> guard(mutex_);
+        std::lock_guard<std::shared_mutex> guard(mutex_);
         BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
         if (localEndpoint_ == nullptr) {
             BM_LOG_ERROR("device_urma UpdateRankOptions failed: localEndpoint_ is null");
@@ -1624,7 +1616,7 @@ Result DeviceUrmaTransportManager::UpdateRankOptions(const HybmTransPrepareOptio
     }
 
     // Only import remote memory keys without re-creating resources.
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::shared_mutex> guard(mutex_);
     for (const auto &item : options.options) {
         const uint32_t peerRank = item.first;
         if (peerRank >= rankCount_ || peerRank == rankId_) {
@@ -1653,7 +1645,7 @@ const std::string &DeviceUrmaTransportManager::GetNic() const
 
 const TransportPrivateData DeviceUrmaTransportManager::GetPrivateData() const
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::shared_lock<std::shared_mutex> guard(mutex_);
     TransportPrivateData data{};
     if (localEndpoint_ == nullptr) {
         BM_LOG_ERROR("device_urma GetPrivateData called before localEndpoint_ is ready, returning empty");
@@ -1676,7 +1668,12 @@ Result DeviceUrmaTransportManager::StageAndLaunchTransfer(CompletionContext &ctx
     auto &pt = ctx.pendingTransfers.back();
     pt.rankId = rankId;
 
+    TP_TRACE_BEGIN(TP_HYBM_URMA_STAGE_PREPARE_BUFFERS);
     auto ret = PrepareKernelLaunchBuffers(isRead, localVec, remoteVec, sizeVec, pt.buffers);
+    TP_TRACE_END(TP_HYBM_URMA_STAGE_PREPARE_BUFFERS, ret);
+    const auto totalSize = std::accumulate(sizeVec.begin(), sizeVec.end(), uint64_t{0});
+    TP_TRACE_RECORD(TP_HYBM_URMA_IO_COUNT, sizeVec.size() * 1000ULL, 0);
+    TP_TRACE_RECORD(TP_HYBM_URMA_IO_TOTAL_SIZE, totalSize * 1000ULL, 0);
     if (ret != BM_OK) {
         auto releaseRet = ReleaseDeviceTransferBuffers(pt.buffers);
         if (releaseRet != BM_OK) {
@@ -1689,7 +1686,9 @@ Result DeviceUrmaTransportManager::StageAndLaunchTransfer(CompletionContext &ctx
     }
 
     std::lock_guard<std::mutex> lock_guard(state.rankMutex);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_STAGE_LAUNCH_BATCH);
     ret = LaunchDeviceKernelBatch(pt.buffers, state.thread, isRead, state.channel, localVec.size());
+    TP_TRACE_END(TP_HYBM_URMA_STAGE_LAUNCH_BATCH, ret);
     if (ret != BM_OK) {
         auto releaseRet = ReleaseDeviceTransferBuffers(pt.buffers);
         if (releaseRet != BM_OK) {
@@ -1710,7 +1709,7 @@ Result DeviceUrmaTransportManager::RemoteIo(uint32_t rankId, uint64_t lAddr, uin
     if (size == 0) {
         return BM_OK;
     }
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::shared_lock<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     RemoteRegistration remote{};
     auto ret = FindRemoteRegistrationLocked(rankId, rAddr, size, &remote);
@@ -1738,7 +1737,10 @@ Result DeviceUrmaTransportManager::RemoteIo(uint32_t rankId, uint64_t lAddr, uin
     const auto translatedRemoteAddr = remote.view.addr + (rAddr - remote.addr);
     const bool isRead = !write;
 
-    return StageAndLaunchTransfer(*ctx, state, isRead, {correctedLAddr}, {translatedRemoteAddr}, {size}, rankId);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_LAUNCH_TRANSFER);
+    ret = StageAndLaunchTransfer(*ctx, state, isRead, {correctedLAddr}, {translatedRemoteAddr}, {size}, rankId);
+    TP_TRACE_END(TP_HYBM_URMA_LAUNCH_TRANSFER, ret);
+    return ret;
 }
 
 Result DeviceUrmaTransportManager::ReadRemote(uint32_t rankId, uint64_t lAddr, uint64_t rAddr, uint64_t size)
@@ -1761,12 +1763,18 @@ Result DeviceUrmaTransportManager::WriteRemote(uint32_t rankId, uint64_t lAddr, 
 
 Result DeviceUrmaTransportManager::ReadRemoteAsync(uint32_t rankId, uint64_t lAddr, uint64_t rAddr, uint64_t size)
 {
-    return RemoteIo(rankId, lAddr, rAddr, size, false);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_REMOTE_IO_READ);
+    auto ret = RemoteIo(rankId, lAddr, rAddr, size, false);
+    TP_TRACE_END(TP_HYBM_URMA_REMOTE_IO_READ, ret);
+    return ret;
 }
 
 Result DeviceUrmaTransportManager::WriteRemoteAsync(uint32_t rankId, uint64_t lAddr, uint64_t rAddr, uint64_t size)
 {
-    return RemoteIo(rankId, lAddr, rAddr, size, true);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_REMOTE_IO_WRITE);
+    auto ret = RemoteIo(rankId, lAddr, rAddr, size, true);
+    TP_TRACE_END(TP_HYBM_URMA_REMOTE_IO_WRITE, ret);
+    return ret;
 }
 
 Result DeviceUrmaTransportManager::ResolveBatchIoAddressesLocked(uint32_t rankId, const CopyDescriptor &descriptor,
@@ -1826,7 +1834,7 @@ Result DeviceUrmaTransportManager::RemoteIoBatch(uint32_t rankId, const CopyDesc
         return BM_OK;
     }
 
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::shared_lock<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     auto rankIt = remoteRanks_.find(rankId);
     if (rankIt == remoteRanks_.end()) {
@@ -1843,7 +1851,9 @@ Result DeviceUrmaTransportManager::RemoteIoBatch(uint32_t rankId, const CopyDesc
     std::vector<uint64_t> localVec;
     std::vector<uint64_t> remoteVec;
     std::vector<uint64_t> sizeVec;
+    TP_TRACE_BEGIN(TP_HYBM_URMA_RESOLVE_BATCH_IO);
     auto ret = ResolveBatchIoAddressesLocked(rankId, descriptor, localVec, remoteVec, sizeVec);
+    TP_TRACE_END(TP_HYBM_URMA_RESOLVE_BATCH_IO, ret);
     if (ret != BM_OK) {
         return ret;
     }
@@ -1856,17 +1866,26 @@ Result DeviceUrmaTransportManager::RemoteIoBatch(uint32_t rankId, const CopyDesc
         BM_LOG_ERROR("device_urma RemoteIoBatch LookupOrCreateContextLocked failed");
         return BM_ERROR;
     }
-    return StageAndLaunchTransfer(*ctx, state, !write, localVec, remoteVec, sizeVec, rankId);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_LAUNCH_TRANSFER);
+    ret = StageAndLaunchTransfer(*ctx, state, !write, localVec, remoteVec, sizeVec, rankId);
+    TP_TRACE_END(TP_HYBM_URMA_LAUNCH_TRANSFER, ret);
+    return ret;
 }
 
 Result DeviceUrmaTransportManager::WriteRemoteBatchAsync(uint32_t rankId, const CopyDescriptor &descriptor)
 {
-    return RemoteIoBatch(rankId, descriptor, true);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_REMOTE_IO_BATCH_WRITE);
+    auto ret = RemoteIoBatch(rankId, descriptor, true);
+    TP_TRACE_END(TP_HYBM_URMA_REMOTE_IO_BATCH_WRITE, ret);
+    return ret;
 }
 
 Result DeviceUrmaTransportManager::ReadRemoteBatchAsync(uint32_t rankId, const CopyDescriptor &descriptor)
 {
-    return RemoteIoBatch(rankId, descriptor, false);
+    TP_TRACE_BEGIN(TP_HYBM_URMA_REMOTE_IO_BATCH_READ);
+    auto ret = RemoteIoBatch(rankId, descriptor, false);
+    TP_TRACE_END(TP_HYBM_URMA_REMOTE_IO_BATCH_READ, ret);
+    return ret;
 }
 
 aclrtFuncHandle DeviceUrmaTransportManager::GetDeviceKernelFunc(bool isRead) const
@@ -1879,7 +1898,9 @@ Result DeviceUrmaTransportManager::ReleaseDeviceTransferBuffers(DeviceTransferBu
     if (buffers.dstList == nullptr) {
         return BM_OK;
     }
+    TP_TRACE_BEGIN(TP_HYBM_URMA_RELEASE_FREE_BUFFER);
     auto ret = DlAclApi::AclrtFree(buffers.dstList);
+    TP_TRACE_END(TP_HYBM_URMA_RELEASE_FREE_BUFFER, ret);
     if (ret != BM_OK) {
         BM_LOG_ERROR("device_urma ReleaseDeviceTransferBuffers AclrtFree failed, dstList: " << VaToStr(buffers.dstList)
                                                                                             << " ret: " << ret);
@@ -1972,15 +1993,19 @@ Result DeviceUrmaTransportManager::LaunchDeviceKernelBatch(const DeviceTransferB
     cfg.attrs = &attr;
     cfg.numAttrs = 1;
 
+    TP_TRACE_BEGIN(TP_HYBM_URMA_KERNEL_LAUNCH);
     ret = DlAclApi::AclrtLaunchKernelWithConfig(funcHandle, HYBM_DEVICE_KERNEL_BLOCK_DIM, stream, &cfg, argsHandle,
                                                 nullptr);
+    TP_TRACE_END(TP_HYBM_URMA_KERNEL_LAUNCH, ret);
     if (ret != BM_OK) {
         BM_LOG_ERROR("device_urma LaunchDeviceKernelBatch AclrtLaunchKernelWithConfig failed, kernel: "
                      << (isRead ? HYBM_DEVICE_FUNC_READ : HYBM_DEVICE_FUNC_WRITE) << " ret: " << ret);
         return ret;
     }
 
+    TP_TRACE_BEGIN(TP_HYBM_URMA_KERNEL_LAUNCH_SYNC_STREAM);
     ret = DlAclApi::AclrtSynchronizeStream(stream);
+    TP_TRACE_END(TP_HYBM_URMA_KERNEL_LAUNCH_SYNC_STREAM, ret);
     if (ret != BM_OK) {
         BM_LOG_ERROR("device_urma launch kernel AclrtSynchronizeStream failed, ret: " << ret);
         return ret;
@@ -2037,15 +2062,19 @@ Result DeviceUrmaTransportManager::LaunchDeviceKernelNotify(HcommThreadHandle th
     cfg.attrs = &attr;
     cfg.numAttrs = 1;
 
+    TP_TRACE_BEGIN(TP_HYBM_URMA_KERNEL_LAUNCH);
     ret = DlAclApi::AclrtLaunchKernelWithConfig(funcHandle, HYBM_DEVICE_KERNEL_BLOCK_DIM, stream, &cfg, argsHandle,
                                                 nullptr);
+    TP_TRACE_END(TP_HYBM_URMA_KERNEL_LAUNCH, ret);
     if (ret != BM_OK) {
         BM_LOG_ERROR("device_urma LaunchDeviceKernelNotify AclrtLaunchKernelWithConfig failed, kernel: "
                      << HYBM_DEVICE_FUNC_READ << " ret: " << ret);
         return ret;
     }
 
+    TP_TRACE_BEGIN(TP_HYBM_URMA_KERNEL_LAUNCH_SYNC_STREAM);
     ret = DlAclApi::AclrtSynchronizeStream(stream);
+    TP_TRACE_END(TP_HYBM_URMA_KERNEL_LAUNCH_SYNC_STREAM, ret);
     if (ret != BM_OK) {
         BM_LOG_ERROR("device_urma LaunchDeviceKernelNotify AclrtSynchronizeStream failed, ret: " << ret);
         return ret;
@@ -2058,8 +2087,10 @@ Result DeviceUrmaTransportManager::SynchronizeRankPendingLocked(CompletionContex
 {
     std::lock_guard<std::mutex> rankLock(state.rankMutex);
     if (hasInFlight) {
+        TP_TRACE_BEGIN(TP_HYBM_URMA_LAUNCH_KERNEL_NOTIFY);
         auto ret =
             LaunchDeviceKernelNotify(state.thread, state.channel, state.remoteFlagAddr, ctx.notifyAddr, ctx.notifyLen);
+        TP_TRACE_END(TP_HYBM_URMA_LAUNCH_KERNEL_NOTIFY, ret);
         if (ret != BM_OK) {
             BM_LOG_ERROR("device_urma SynchronizeRankPending LaunchDeviceKernelNotify failed, rankId="
                          << rankId << " ret=" << ret);
@@ -2068,9 +2099,13 @@ Result DeviceUrmaTransportManager::SynchronizeRankPendingLocked(CompletionContex
     }
 
     std::vector<PendingTransfer> rankPending;
+    TP_TRACE_BEGIN(TP_HYBM_URMA_EXTRACT_RANK_PENDING);
     ExtractRankPending(ctx.pendingTransfers, rankId, rankPending);
+    TP_TRACE_END(TP_HYBM_URMA_EXTRACT_RANK_PENDING, BM_OK);
 
+    TP_TRACE_BEGIN(TP_HYBM_URMA_SYNC_CONTEXT);
     auto syncRet = SynchronizeContextLocked(ctx.notify, ctx.stream, rankPending);
+    TP_TRACE_END(TP_HYBM_URMA_SYNC_CONTEXT, syncRet);
     if (syncRet != BM_OK) {
         RestoreRankPending(rankPending, ctx.pendingTransfers);
         return syncRet;
@@ -2080,7 +2115,7 @@ Result DeviceUrmaTransportManager::SynchronizeRankPendingLocked(CompletionContex
 
 Result DeviceUrmaTransportManager::Synchronize(uint32_t rankId)
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::shared_lock<std::shared_mutex> guard(mutex_);
     BM_VALIDATE_RETURN(opened_, "device_urma transport manager is not opened", BM_ERROR);
     auto rankIt = remoteRanks_.find(rankId);
     if (rankIt == remoteRanks_.end()) {
@@ -2112,11 +2147,15 @@ Result DeviceUrmaTransportManager::Synchronize(uint32_t rankId)
         }
     }
     if (needSync) {
-        return SynchronizeRankPendingLocked(*currentCtx, rankIt->second, targetRankId, hasInFlight);
+        TP_TRACE_BEGIN(TP_HYBM_URMA_SYNC_RANK_PENDING);
+        auto ret = SynchronizeRankPendingLocked(*currentCtx, rankIt->second, targetRankId, hasInFlight);
+        TP_TRACE_END(TP_HYBM_URMA_SYNC_RANK_PENDING, ret);
+        return ret;
     }
 
     // Current context has no pending for target rankId. If any OTHER context
     // has pending for target rankId → reject (foreign pending for same rank).
+    std::shared_lock<std::shared_mutex> regGuard(registryMutex_);
     for (const auto &ctxSp : registry_) {
         if (!ctxSp || ctxSp.get() == currentCtx) {
             continue;

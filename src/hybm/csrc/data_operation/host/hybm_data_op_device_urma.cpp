@@ -655,47 +655,48 @@ void DataOpDeviceURMA::ClassifyDataAddr(void **globalAddrs, void **localAddrs, c
                                         std::unordered_map<uint32_t, CopyDescriptor> &notRegistered,
                                         uint32_t globalRankId) noexcept
 {
-    for (size_t i = 0; i < batchSize; ++i) {
-        if (globalRankId == rankId_) {
-            auto iter = localed.find(globalRankId);
-            if (iter == localed.end()) {
-                CopyDescriptor desc{};
-                desc.localAddrs.push_back(localAddrs[i]);
-                desc.globalAddrs.push_back(globalAddrs[i]);
-                desc.counts.push_back(counts[i]);
-                localed.emplace(std::make_pair(globalRankId, desc));
-            } else {
-                iter->second.localAddrs.push_back(localAddrs[i]);
-                iter->second.globalAddrs.push_back(globalAddrs[i]);
-                iter->second.counts.push_back(counts[i]);
-            }
-        } else if (!transportManager_->QueryHasRegistered((uint64_t)localAddrs[i], counts[i])) {
-            auto iter = notRegistered.find(globalRankId);
-            if (iter == notRegistered.end()) {
-                CopyDescriptor desc{};
-                desc.localAddrs.push_back(localAddrs[i]);
-                desc.globalAddrs.push_back(globalAddrs[i]);
-                desc.counts.push_back(counts[i]);
-                notRegistered.emplace(std::make_pair(globalRankId, desc));
-            } else {
-                iter->second.localAddrs.push_back(localAddrs[i]);
-                iter->second.globalAddrs.push_back(globalAddrs[i]);
-                iter->second.counts.push_back(counts[i]);
-            }
-        } else {
-            auto iter = registered.find(globalRankId);
-            if (iter == registered.end()) {
-                CopyDescriptor desc{};
-                desc.localAddrs.push_back(localAddrs[i]);
-                desc.globalAddrs.push_back(globalAddrs[i]);
-                desc.counts.push_back(counts[i]);
-                registered.emplace(std::make_pair(globalRankId, desc));
-            } else {
-                iter->second.localAddrs.push_back(localAddrs[i]);
-                iter->second.globalAddrs.push_back(globalAddrs[i]);
-                iter->second.counts.push_back(counts[i]);
-            }
+    // globalRankId is constant for the whole batch, so every entry shares the same key.
+    // Get-or-create the descriptor once and reserve capacity to avoid repeated reallocations.
+    auto getOrCreateDesc = [&globalRankId, batchSize](std::unordered_map<uint32_t, CopyDescriptor> &m) {
+        auto [it, inserted] = m.try_emplace(globalRankId);
+        if (inserted) {
+            it->second.localAddrs.reserve(batchSize);
+            it->second.globalAddrs.reserve(batchSize);
+            it->second.counts.reserve(batchSize);
         }
+        return &it->second;
+    };
+
+    if (globalRankId == rankId_) {
+        CopyDescriptor *desc = getOrCreateDesc(localed);
+        for (uint32_t i = 0; i < batchSize; ++i) {
+            desc->localAddrs.push_back(localAddrs[i]);
+            desc->globalAddrs.push_back(globalAddrs[i]);
+            desc->counts.push_back(counts[i]);
+        }
+        return;
+    }
+
+    // Per-item registration check splits items between registered and notRegistered.
+    // Cache the descriptor pointer so only the first item per bucket pays the hash lookup.
+    CopyDescriptor *regDesc = nullptr;
+    CopyDescriptor *notRegDesc = nullptr;
+    for (uint32_t i = 0; i < batchSize; ++i) {
+        CopyDescriptor *desc;
+        if (transportManager_->QueryHasRegistered((uint64_t)localAddrs[i], counts[i])) {
+            if (regDesc == nullptr) {
+                regDesc = getOrCreateDesc(registered);
+            }
+            desc = regDesc;
+        } else {
+            if (notRegDesc == nullptr) {
+                notRegDesc = getOrCreateDesc(notRegistered);
+            }
+            desc = notRegDesc;
+        }
+        desc->localAddrs.push_back(localAddrs[i]);
+        desc->globalAddrs.push_back(globalAddrs[i]);
+        desc->counts.push_back(counts[i]);
     }
 }
 
@@ -762,8 +763,10 @@ Result DataOpDeviceURMA::BatchCopyRead(hybm_batch_copy_params &params, const Ext
     std::unordered_map<uint32_t, CopyDescriptor> localed{};
     std::unordered_map<uint32_t, CopyDescriptor> registered{};
     std::unordered_map<uint32_t, CopyDescriptor> notRegistered{};
+    TP_TRACE_BEGIN(TP_HYBM_URMA_CLASSIFY_DATA_ADDR);
     ClassifyDataAddr(params.sources, params.destinations, params.dataSizes, params.batchSize, registered, localed,
                      notRegistered, options.srcRankId);
+    TP_TRACE_END(TP_HYBM_URMA_CLASSIFY_DATA_ADDR, BM_OK);
 
     // 先读异步（batch）
     std::set<uint32_t> asyncSubmittedRanks{};

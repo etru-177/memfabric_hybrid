@@ -2684,11 +2684,10 @@ TEST(DeviceUrmaTransportManagerTest, RemoteIoZeroSizeAndFindRegistrationEdges)
     manager.opened_ = true;
     manager.rankCount_ = 2;
     EXPECT_EQ(manager.FindLocalRegistrationLocked(0, MOCK_SIZE, nullptr), BM_INVALID_PARAM);
-    EXPECT_EQ(manager.FindLocalRegistrationLocked(MOCK_LOCAL_ADDR, 0, nullptr), BM_OK);
+    EXPECT_EQ(manager.FindLocalRegistrationLocked(MOCK_LOCAL_ADDR, 0, nullptr), BM_INVALID_PARAM);
     EXPECT_EQ(manager.FindLocalRegistrationLocked(UINT64_MAX, 2, nullptr), BM_INVALID_PARAM);
-    EXPECT_EQ(manager.FindRemoteRegistrationLocked(2, MOCK_REMOTE_ADDR, MOCK_SIZE, nullptr), BM_INVALID_PARAM);
-    EXPECT_EQ(manager.FindRemoteRegistrationLocked(1, MOCK_REMOTE_ADDR, 0, nullptr), BM_OK);
-    EXPECT_EQ(manager.FindRemoteRegistrationLocked(1, UINT64_MAX, 2, nullptr), BM_NOT_CONNECTED);
+    EXPECT_EQ(manager.FindRemoteRegistrationLocked(2, MOCK_REMOTE_ADDR, MOCK_SIZE, nullptr), BM_NOT_CONNECTED);
+    EXPECT_EQ(manager.FindRemoteRegistrationLocked(2, MOCK_REMOTE_ADDR, 0, nullptr), BM_NOT_CONNECTED);
     manager.remoteRanks_.try_emplace(1);
     EXPECT_EQ(manager.FindRemoteRegistrationLocked(1, UINT64_MAX, 2, nullptr), BM_INVALID_PARAM);
 }
@@ -2953,26 +2952,27 @@ TEST(DeviceUrmaTransportManagerTest, RemoteIoConvertsAclDramLocalAddrToDva)
     fix.CleanupAndClose(manager);
 }
 
-// DVA-corrected range overflow returns BM_INVALID_PARAM without launch.
-TEST(DeviceUrmaTransportManagerTest, RemoteIoFailsOnDvaRangeOverflow)
+// A valid corrected DVA start may launch even when the corrected end range wraps.
+TEST(DeviceUrmaTransportManagerTest, RemoteIoAllowsDvaRangeEndWrapWhenStartIsValid)
 {
     g_kernelLaunchCallCount = 0;
     DeviceTestFixture fix;
     fix.InstallAll();
     DeviceUrmaTransportManager manager;
     fix.OpenAndPreparePeer(manager);
-    // deviceVa near max: correctedAddr=UINT64_MAX-0x800, correctedAddr+MOCK_SIZE wraps
+    // deviceVa near max: corrected start is valid, but correctedAddr+MOCK_SIZE wraps.
     constexpr uint64_t kNearMax = ~0ULL - 0x800ULL;
     fix.AddLocalReg(manager, MOCK_LOCAL_ADDR, 0x2000U, REG_MR_FLAG_DRAM, kNearMax);
 
-    EXPECT_EQ(manager.ReadRemoteAsync(1, MOCK_LOCAL_ADDR, MOCK_REMOTE_ADDR, MOCK_SIZE), BM_INVALID_PARAM);
-    EXPECT_EQ(g_kernelLaunchCallCount, 0);
-    if (!manager.registry_.empty()) {
-        auto *ctx = manager.registry_[0].get();
-        if (ctx != nullptr) {
-            EXPECT_TRUE(ctx->pendingTransfers.empty());
-        }
-    }
+    ASSERT_EQ(manager.ReadRemoteAsync(1, MOCK_LOCAL_ADDR, MOCK_REMOTE_ADDR, MOCK_SIZE), BM_OK);
+    EXPECT_GE(g_kernelLaunchCallCount, 1U);
+    ASSERT_EQ(manager.registry_.size(), 1U);
+    auto *ctx = manager.registry_[0].get();
+    ASSERT_NE(ctx, nullptr);
+    ASSERT_EQ(ctx->pendingTransfers.size(), 1U);
+    EXPECT_TRUE(ctx->pendingTransfers[0].inFlight);
+    EXPECT_EQ(manager.Synchronize(1), BM_OK);
+    EXPECT_TRUE(ctx->pendingTransfers.empty());
     fix.CleanupAndClose(manager);
 }
 

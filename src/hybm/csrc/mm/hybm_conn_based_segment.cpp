@@ -27,6 +27,7 @@
 #include "hybm_logger.h"
 #include "hybm_numa_util.h"
 #include "hybm_va_manager.h"
+#include "mf_num_util.h"
 
 using namespace ock::mf;
 
@@ -367,7 +368,13 @@ Result HybmConnBasedSegment::MapSlice(void *&mapped, void *sliceAddr, uint64_t l
     {
         std::optional<CpuAffinityGuard> cpuGuard;
         if (socType_ == AscendSocType::ASCEND_950) {
-            const auto policyInfo = HybmNumaUtil::GetNumaBindPolicyInfo(options_.flags, logicDeviceId_);
+            uint32_t flag = options_.flags;
+            if (NumUtil::ExtractBits(flag, HYBM_PERFORMANCE_MODE_FLAG_INDEX, HYBM_PERFORMANCE_MODE_FLAG_LEN) != 1) {
+                flag |= (1U << HYBM_PERFORMANCE_MODE_FLAG_INDEX) | HYBM_BIND_NUMA_AUTO_AFFINITY_FLAG;
+                BM_LOG_INFO("not set numa, auto bind numa on ASCEND_950");
+            }
+
+            const auto policyInfo = HybmNumaUtil::GetNumaBindPolicyInfo(flag, logicDeviceId_);
             if (policyInfo.valid && policyInfo.policy != NumaBindPolicy::OFF && !policyInfo.socketCpus.empty()) {
                 BM_LOG_DEBUG("ConnBasedSegment CPU affinity policy:" << static_cast<int32_t>(policyInfo.policy)
                                                                      << " socketCpus:" << policyInfo.socketCpus.size()

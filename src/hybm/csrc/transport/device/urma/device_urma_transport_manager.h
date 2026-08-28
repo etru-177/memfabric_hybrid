@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -247,7 +248,8 @@ private:
     Result LaunchDeviceKernelNotify(HcommThreadHandle thread, HcommChannelHandle channel, uint64_t remoteFlagAddr,
                                     uint64_t notifyAddr, uint32_t notifyLen);
 
-    mutable std::mutex mutex_{};
+    mutable std::shared_mutex mutex_{};
+    mutable std::shared_mutex registryMutex_{};
     bool opened_{false};
     uint32_t rankId_{0};
     uint32_t rankCount_{0};
