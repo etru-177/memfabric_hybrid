@@ -1,6 +1,6 @@
 # sparse_copy_urma examples
 
-这两个示例共用生产 `HybmBatchCopy`、固定 route 和
+01/02 共用生产 `HybmBatchCopy`、固定 route 和
 `mf_acc_offload.sparse_copy_urma`，不调用 `offload.initialize()`。建链使用
 `bm.BmDataOpType.HOST_DEVICE_URMA`；route 首次发布后不增加内存区间、不替换 peer，调用方保证 entity
 在同步拷贝完成前保持存活。
@@ -112,3 +112,35 @@ EID、物理/逻辑卡映射、尺寸、范围和地址加法在可检查处先�
 stage/rank/device/地址/长度上下文。不要为绕过
 生产 key/type/address 门禁而设置额外变量。验证完成后删除该临时 Python 分支、构建宏/脚本参数和配套工具，
 再以默认 `--build_local_dram_validation OFF` 重新构建。
+
+## 03：AICPU 发起 Host 聚合
+
+该 Demo 只测一条固定 happy path：AICPU 写 Host mailbox，Host busy-poll 后 gather，一次大包写入
+NPU HBM，AICPU 轮询 ready 后按固定 stride scatter。TCP 只在计时前做启动屏障，不承载聚合请求。
+
+先使用 local DRAM 验证开关构建并安装 MemFabric 主包，再构建并安装 AICPU kernel：
+
+```bash
+bash script/build_and_pack_run.sh --build_local_dram_validation ON
+bash script/kernel/build_ops_run.sh
+./output/memfabric_hybrid_aicpu_kernel.run --install --force
+```
+
+按上文生成 `env` 后启动 Host：
+
+```bash
+python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
+  --role host --head-ip 127.0.0.1
+```
+
+再启动 Device：
+
+```bash
+python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
+  --role device --head-ip 127.0.0.1
+```
+
+默认聚合 `4096 * 2048 B = 8 MiB`。两端可同时传入相同的 `--segments` 和
+`--segment-bytes`。Device 输出 AICPU 同一时钟下的 `request_us`、`wait_host_us`、`scatter_us`
+和 `e2e_us`；Host 输出 `gather_us`、大包 `write_us` 和 ready 写耗时。该程序没有数据校验、
+超时、重试、并发或异常清理，只用于上板穿刺。

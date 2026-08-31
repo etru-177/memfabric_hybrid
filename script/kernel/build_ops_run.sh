@@ -103,6 +103,7 @@ echo " ASCEND_HOME_PATH  = ${ASCEND_HOME_PATH:-<not set>}"
 echo "============================================"
 
 AICPU_KERNEL_SOURCES="${OPS_SRC_DIR}/hybm_kernel/hybm_batch_transfer.cc;"
+AICPU_KERNEL_SOURCES+="${PROJECT_ROOT}/src/acc_offload/csrc/operators/aicpu/hybm_aggregate_urma_demo.cc;"
 AICPU_KERNEL_SOURCES+="${PROJECT_ROOT}/src/acc_offload/csrc/operators/aicpu/hybm_batch_copy.cc"
 
 # ---- Clean if requested ----

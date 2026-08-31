@@ -42,6 +42,7 @@ endforeach()
 if(NOT DEFINED AICPU_KERNEL_SRC)
   set(AICPU_KERNEL_SRC
       "${CMAKE_CURRENT_SOURCE_DIR}/hybm_batch_transfer.cc"
+      "${PROJECT_ACC_OFFLOAD_SRC_BASE}/csrc/operators/aicpu/hybm_aggregate_urma_demo.cc"
       "${PROJECT_ACC_OFFLOAD_SRC_BASE}/csrc/operators/aicpu/hybm_batch_copy.cc"
       "${PROJECT_ACC_OFFLOAD_SRC_BASE}/csrc/operators/aicpu/hybm_kvcache_scatter_copy.cc"
   )
@@ -61,6 +62,7 @@ add_custom_command(
 # ---- Cross-compile .so ----
 set(AICPU_KERNEL_DEPS
     ${CMAKE_CURRENT_SOURCE_DIR}/hybm_batch_transfer.h
+    ${PROJECT_ACC_OFFLOAD_SRC_BASE}/csrc/operators/aicpu/hybm_aggregate_urma_demo.h
     ${PROJECT_ACC_OFFLOAD_SRC_BASE}/csrc/operators/aicpu/hybm_batch_copy.h
     ${PROJECT_ACC_OFFLOAD_SRC_BASE}/csrc/operators/aicpu/hybm_kvcache_scatter_copy.h
     ${CMAKE_CURRENT_SOURCE_DIR}/hybm_kernel_log.h

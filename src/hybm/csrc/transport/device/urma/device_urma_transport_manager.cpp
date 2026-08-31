@@ -1260,12 +1260,6 @@ Result DeviceUrmaTransportManager::ImportRemoteMemKeysLocked(uint32_t peerRank, 
                 rollbackNewImports();
                 return BM_DL_FUNCTION_FAILED;
             }
-            if (flagOutMem.type == COMM_MEM_TYPE_INVALID) {
-                BM_LOG_ERROR(
-                    "device_urma ImportRemoteMemKeysLocked flag import returned invalid type, peer: " << peerRank);
-                rollbackNewImports();
-                return BM_INVALID_PARAM;
-            }
             state.remoteFlagAddr = reinterpret_cast<uint64_t>(flagOutMem.addr);
             state.remoteFlagSize = flagOutMem.size;
             state.remoteFlagDescBytes.assign(flagRaw, flagRaw + exportDesc.devTransFlagDescLen);

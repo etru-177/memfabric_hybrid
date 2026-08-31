@@ -395,16 +395,18 @@ Result HcommTransportManager::HcommMemImport(const UrmaEndpointHandle &endpoint,
             BM_LOG_ERROR("urma HcommMemImport failed, ret: " << ret);
             return BM_DL_FUNCTION_FAILED;
         }
-        if (outMem.type == COMM_MEM_TYPE_INVALID) {
-            BM_LOG_ERROR("urma HcommMemImport invalid outMem type (COMM_MEM_TYPE_INVALID)");
-            return BM_INVALID_PARAM;
-        }
     }
 
     BM_LOG_INFO("urma import memory returned outMem (addr=" << VaToStr(outMem.addr) << " size=" << outMem.size
                                                             << " type=" << outMem.type << ")");
-    UrmaCommMem view{reinterpret_cast<uint64_t>(outMem.addr), outMem.size,
-                     outMem.type == COMM_MEM_TYPE_DEVICE ? UrmaMemoryType::DEVICE_HBM : UrmaMemoryType::HOST_DRAM};
+    UrmaMemoryType viewType =
+        endpoint->desc.loc.locType == ENDPOINT_LOC_TYPE_DEVICE ? UrmaMemoryType::DEVICE_HBM : desc.memoryType;
+    if (outMem.type == COMM_MEM_TYPE_DEVICE) {
+        viewType = UrmaMemoryType::DEVICE_HBM;
+    } else if (outMem.type == COMM_MEM_TYPE_HOST) {
+        viewType = UrmaMemoryType::HOST_DRAM;
+    }
+    UrmaCommMem view{reinterpret_cast<uint64_t>(outMem.addr), outMem.size, viewType};
     if (!IsValidMem(view)) {
         BM_LOG_ERROR("urma HcommMemImport returned invalid view (addr="
                      << std::hex << view.addr << " size=" << view.size << " type=" << view.type << std::dec << ")");

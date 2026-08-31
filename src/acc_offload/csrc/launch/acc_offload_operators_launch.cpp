@@ -27,6 +27,7 @@
 #include "acl/acl_rt.h"
 #include "acc_offload_define.h"
 #include "acc_offload_operators.h"
+#include "hybm_aggregate_urma_demo.h"
 #include "hybm_batch_copy.h"
 #include "hybm_kvcache_scatter_copy.h"
 #include "hybm_def.h"
@@ -34,6 +35,7 @@
 namespace {
 constexpr char kKernelJsonSuffix[] = "/opp/vendors/cust/op_impl/aicpu/config/libcann_hybm_kernel.json";
 constexpr char kDefaultAscendPath[] = "/usr/local/Ascend/cann";
+constexpr char kAggregateUrmaDemoFunctionName[] = "HybmAggregateUrmaDemo";
 constexpr char kBatchCopyFunctionName[] = "HybmBatchCopy";
 constexpr char kKvcacheScatterCopyFunctionName[] = "HybmKvcacheScatterCopy";
 constexpr uint32_t kKernelBlockDim = 1U;
@@ -45,6 +47,7 @@ struct BatchCopyKernelCache {
 };
 
 std::mutex gBatchCopyKernelMutex;
+std::unordered_map<uint16_t, BatchCopyKernelCache> gAggregateUrmaDemoKernelCache;
 std::unordered_map<uint16_t, BatchCopyKernelCache> gBatchCopyKernelCache;
 std::unordered_map<uint16_t, BatchCopyKernelCache> gKvcacheScatterCopyKernelCache;
 
@@ -141,6 +144,11 @@ int32_t GetBatchCopyFunction(uint16_t deviceId, aclrtFuncHandle &function)
     return GetKernelFunction(deviceId, kBatchCopyFunctionName, gBatchCopyKernelCache, function);
 }
 
+int32_t GetAggregateUrmaDemoFunction(uint16_t deviceId, aclrtFuncHandle &function)
+{
+    return GetKernelFunction(deviceId, kAggregateUrmaDemoFunctionName, gAggregateUrmaDemoKernelCache, function);
+}
+
 int32_t GetKvcacheScatterCopyFunction(uint16_t deviceId, aclrtFuncHandle &function)
 {
     return GetKernelFunction(deviceId, kKvcacheScatterCopyFunctionName, gKvcacheScatterCopyKernelCache, function);
@@ -234,6 +242,75 @@ int32_t LaunchSparseCopyUrma(uint64_t srcPtrs, uint64_t dstPtrs, uint64_t lenPtr
     }
 }
 
+int32_t PrepareAggregateUrmaDemoArgs(aclrtFuncHandle function, const HybmAggregateUrmaDemoParam &param,
+                                     aclrtArgsHandle &argsHandle)
+{
+    argsHandle = nullptr;
+    auto ret = aclrtKernelArgsInit(function, &argsHandle);
+    if (ret != ACL_SUCCESS) {
+        OFFLOAD_LOG_ERROR("aclrtKernelArgsInit failed for aggregate URMA demo, ret: " << ret);
+        return BM_DL_FUNCTION_FAILED;
+    }
+    aclrtParamHandle paramHandle = nullptr;
+    ret = aclrtKernelArgsAppend(argsHandle, &param, sizeof(param), &paramHandle);
+    if (ret != ACL_SUCCESS) {
+        OFFLOAD_LOG_ERROR("aclrtKernelArgsAppend failed for aggregate URMA demo, ret: " << ret);
+        return BM_DL_FUNCTION_FAILED;
+    }
+    ret = aclrtKernelArgsFinalize(argsHandle);
+    if (ret != ACL_SUCCESS) {
+        OFFLOAD_LOG_ERROR("aclrtKernelArgsFinalize failed for aggregate URMA demo, ret: " << ret);
+        return BM_DL_FUNCTION_FAILED;
+    }
+    return BM_OK;
+}
+
+int32_t LaunchAggregateUrmaDemoKernel(aclrtFuncHandle function, aclrtStream stream,
+                                      const HybmAggregateUrmaDemoParam &param, uint16_t deviceId)
+{
+    aclrtArgsHandle argsHandle = nullptr;
+    auto ret = PrepareAggregateUrmaDemoArgs(function, param, argsHandle);
+    if (ret != BM_OK) {
+        return ret;
+    }
+    aclrtLaunchKernelCfg config{nullptr, 0U};
+    ret = aclrtLaunchKernelWithConfig(function, kKernelBlockDim, stream, &config, argsHandle, nullptr);
+    if (ret != ACL_SUCCESS) {
+        OFFLOAD_LOG_ERROR("launch aggregate URMA demo failed, deviceId: " << deviceId << " ret: " << ret);
+        return BM_DL_FUNCTION_FAILED;
+    }
+    ret = aclrtSynchronizeStream(stream);
+    if (ret != ACL_SUCCESS) {
+        OFFLOAD_LOG_ERROR("synchronize aggregate URMA demo failed, deviceId: " << deviceId << " ret: " << ret);
+        return BM_DL_FUNCTION_FAILED;
+    }
+    return BM_OK;
+}
+
+int32_t LaunchAggregateUrmaDemo(const HybmAggregateUrmaDemoParam &param, uint16_t deviceId)
+{
+    try {
+        c10_npu::OptionalNPUGuard npuGuard;
+        npuGuard.set_index(deviceId);
+        auto stream = c10_npu::getCurrentNPUStream(deviceId);
+        aclrtStream npuStream = stream.stream(false);
+        if (npuStream == nullptr) {
+            OFFLOAD_LOG_ERROR("current NPU stream is null for aggregate URMA demo, deviceId: " << deviceId);
+            return BM_DL_FUNCTION_FAILED;
+        }
+        aclrtFuncHandle function = nullptr;
+        const auto ret = GetAggregateUrmaDemoFunction(deviceId, function);
+        return ret == BM_OK ? LaunchAggregateUrmaDemoKernel(function, npuStream, param, deviceId) : ret;
+    } catch (const std::exception &exception) {
+        OFFLOAD_LOG_ERROR("aggregate URMA demo raised exception, deviceId: " << deviceId
+                                                                             << " error: " << exception.what());
+        return BM_ERROR;
+    } catch (...) {
+        OFFLOAD_LOG_ERROR("aggregate URMA demo raised unknown exception, deviceId: " << deviceId);
+        return BM_ERROR;
+    }
+}
+
 int32_t PrepareKvcacheScatterCopyArgs(aclrtFuncHandle function, HybmKvcacheScatterCopyParam param,
                                       aclrtArgsHandle &argsHandle)
 {
@@ -312,6 +389,18 @@ int32_t LaunchKvcacheScatterCopy(const HybmKvcacheScatterCopyParam &param, uint1
 } // namespace
 
 extern "C" {
+int32_t AccOffloadAggregateUrmaDemo(uint64_t message, uint64_t ready, uint64_t dstNew, uint64_t dstBase,
+                                    uint64_t timing, uint16_t devIdx)
+{
+    HybmAggregateUrmaDemoParam param{};
+    param.message = reinterpret_cast<const HybmAggregateUrmaDemoMessage *>(message);
+    param.ready = reinterpret_cast<volatile uint64_t *>(ready);
+    param.dstNew = reinterpret_cast<uint8_t *>(dstNew);
+    param.dstBase = reinterpret_cast<uint8_t *>(dstBase);
+    param.timing = reinterpret_cast<HybmAggregateUrmaDemoTiming *>(timing);
+    return LaunchAggregateUrmaDemo(param, devIdx);
+}
+
 void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint8_t devIdx)
 {
     c10_npu::OptionalNPUGuard npuGuard;

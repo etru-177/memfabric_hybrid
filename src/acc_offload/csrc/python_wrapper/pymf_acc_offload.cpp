@@ -12,13 +12,42 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
+#include <chrono>
+#include <cstring>
+
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
 #include "acc_offload.h"
+#include "operators/aicpu/hybm_aggregate_urma_demo.h"
 
 namespace py = pybind11;
+
+py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t aggregate)
+{
+    using Clock = std::chrono::steady_clock;
+    auto *message = reinterpret_cast<HybmAggregateUrmaDemoMessage *>(mailbox);
+    HybmAggregateUrmaDemoRequest request{};
+    uint64_t waitNs = 0;
+    uint64_t gatherNs = 0;
+    {
+        py::gil_scoped_release release;
+        const auto waitBegin = Clock::now();
+        while (__atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE) == 0U) {}
+        const auto gatherBegin = Clock::now();
+        request = message->request;
+        auto *src = reinterpret_cast<const uint8_t *>(source);
+        auto *dst = reinterpret_cast<uint8_t *>(aggregate);
+        for (uint32_t index = 0; index < request.segmentCount; ++index) {
+            std::memcpy(dst + index * request.segmentBytes, src + index * request.srcStride, request.segmentBytes);
+        }
+        const auto gatherEnd = Clock::now();
+        waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherBegin - waitBegin).count();
+        gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherEnd - gatherBegin).count();
+    }
+    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs);
+}
 
 void DefineAccOffloadConfig(py::module_ &m)
 {
@@ -57,6 +86,9 @@ void DefineAccOffloadApi(py::module_ &m)
 
     m.def("sparse_copy_urma", &offload_sparse_copy_urma, py::call_guard<py::gil_scoped_release>(), py::arg("srcPtrs"),
           py::arg("dstPtrs"), py::arg("lenPtrs"), py::arg("listNum"), py::arg("deviceId"));
+
+    m.def("aggregate_wait_and_gather_demo", &AggregateWaitAndGatherDemo, py::arg("mailbox"), py::arg("source"),
+          py::arg("aggregate"));
 
     m.def("npu_kvcache_scatter_copy", &offload_kvcache_scatter_copy, py::call_guard<py::gil_scoped_release>(),
           py::arg("hbmKpe"), py::arg("hbmCkv"), py::arg("hbmBlockTable"), py::arg("dramBlockTable"),

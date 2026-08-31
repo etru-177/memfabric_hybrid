@@ -126,8 +126,7 @@ int32_t MockHcommEndpointCreateFail(const EndpointDesc *, EndpointHandle *)
     return BM_DL_FUNCTION_FAILED;
 }
 
-int32_t MockHcommMemReg(EndpointHandle endpoint, const char *memTag, const HcommCommMem *mem,
-                        HcommMemHandle *memHandle)
+int32_t MockHcommMemReg(EndpointHandle endpoint, const char *memTag, const HcommCommMem *mem, HcommMemHandle *memHandle)
 {
     EXPECT_EQ(endpoint, MOCK_ENDPOINT);
     EXPECT_STREQ(memTag, "7");
@@ -445,7 +444,7 @@ TEST(HcommTransportManagerTest, HcommMemExportCachesHcommDescriptor)
     EXPECT_EQ(firstLen, secondLen);
 }
 
-TEST(HcommTransportManagerTest, HcommMemImportRejectsMalformedDescAndInvalidOutMem)
+TEST(HcommTransportManagerTest, HcommMemImportRejectsMalformedDescAndUsesLocalEndpointType)
 {
     DlHcommApiFnGuard guard;
     DlHcommApi::gHcommEndpointCreate = MockHcommEndpointCreate;
@@ -466,7 +465,8 @@ TEST(HcommTransportManagerTest, HcommMemImportRejectsMalformedDescAndInvalidOutM
 
     DlHcommApi::gHcommMemImport = MockHcommMemImportInvalidType;
     EXPECT_EQ(manager.HcommMemImport(endpoint, rawDesc.data(), static_cast<uint32_t>(rawDesc.size()), &imported),
-              BM_INVALID_PARAM);
+              BM_OK);
+    EXPECT_EQ(imported.type, UrmaMemoryType::DEVICE_HBM);
 
     DlHcommApi::gHcommMemImport = MockHcommMemImportFail;
     EXPECT_EQ(manager.HcommMemImport(endpoint, rawDesc.data(), static_cast<uint32_t>(rawDesc.size()), &imported),

@@ -489,39 +489,13 @@ Result HostUrmaTransportManager::PreparePeerMemoryKeysLocked(uint32_t peerRank,
                                                              const std::vector<TransportMemoryKey> &memKeys,
                                                              RemoteRankState &state)
 {
-    if (state.endpointDesc.loc.locType == ENDPOINT_LOC_TYPE_DEVICE) {
-        return ValidateDevicePeerMemoryKeysLocked(peerRank, memKeys);
+    if (state.endpointDesc.loc.locType != ENDPOINT_LOC_TYPE_DEVICE &&
+        state.endpointDesc.loc.locType != ENDPOINT_LOC_TYPE_HOST) {
+        BM_LOG_ERROR("Unsupported peer endpoint location, rankId: " << rankId_ << " peerRank: " << peerRank
+                                                                    << " locType: " << state.endpointDesc.loc.locType);
+        return BM_INVALID_PARAM;
     }
-    if (state.endpointDesc.loc.locType == ENDPOINT_LOC_TYPE_HOST) {
-        return ImportRemoteMemKeysLocked(peerRank, memKeys, state);
-    }
-    BM_LOG_ERROR("Unsupported peer endpoint location, rankId: " << rankId_ << " peerRank: " << peerRank
-                                                                << " locType: " << state.endpointDesc.loc.locType);
-    return BM_INVALID_PARAM;
-}
-
-Result
-HostUrmaTransportManager::ValidateDevicePeerMemoryKeysLocked(uint32_t peerRank,
-                                                             const std::vector<TransportMemoryKey> &memKeys) const
-{
-    for (const auto &memKey : memKeys) {
-        ParsedRemoteMemKey parsed{};
-        const auto ret = ParseRemoteMemKey(memKey, peerRank, parsed);
-        if (ret != BM_OK) {
-            return ret;
-        }
-        const auto &desc = parsed.exportDesc;
-        if (desc.memoryType != UrmaMemoryType::DEVICE_HBM) {
-            BM_LOG_ERROR("Device peer exported unsupported memory type, rankId: "
-                         << rankId_ << " peerRank: " << peerRank << " keyAddr: 0x" << std::hex << parsed.remoteAddr
-                         << " descAddr: 0x" << desc.addr << std::dec << " memoryType: " << desc.memoryType);
-            return BM_INVALID_PARAM;
-        }
-        BM_LOG_INFO("Host URMA skips Device HBM key, rankId: "
-                    << rankId_ << " peerRank: " << peerRank << " gva: 0x" << std::hex << parsed.remoteAddr
-                    << " hbmAddr: 0x" << desc.addr << std::dec << " size: " << desc.size << " memTag: " << desc.memTag);
-    }
-    return BM_OK;
+    return ImportRemoteMemKeysLocked(peerRank, memKeys, state);
 }
 
 Result HostUrmaTransportManager::ImportRemoteMemKeysLocked(uint32_t peerRank,
@@ -530,53 +504,36 @@ Result HostUrmaTransportManager::ImportRemoteMemKeysLocked(uint32_t peerRank,
 {
     bool flagImported = (state.remoteFlagAddr != 0);
     for (const auto &memKey : memKeys) {
-        if (memKey.keys[0] != urma::URMA_EXPORT_DESC_MAGIC) {
-            BM_LOG_ERROR("Invalid key magic for peer " << peerRank << " magic: 0x" << std::hex << memKey.keys[0]);
-            return BM_INVALID_PARAM;
+        ParsedRemoteMemKey parsed{};
+        auto ret = ParseRemoteMemKey(memKey, peerRank, parsed);
+        if (ret != BM_OK) {
+            return ret;
         }
-        uint64_t remoteAddr = memKey.keys[1];
-        if (remoteAddr == 0) {
-            BM_LOG_ERROR("Zero remote addr in key for peer " << peerRank);
-            return BM_INVALID_PARAM;
-        }
-        const uint8_t *payload =
-            reinterpret_cast<const uint8_t *>(&memKey.keys[urma::DEVICE_URMA_EXPORT_KEY_HEADER_SLOTS]);
-        UrmaExportDesc exportDesc{};
-        std::memcpy(&exportDesc, payload, sizeof(UrmaExportDesc));
-        if (exportDesc.magic != urma::URMA_EXPORT_DESC_MAGIC || exportDesc.version != urma::URMA_EXPORT_DESC_VERSION) {
-            BM_LOG_ERROR("Invalid UrmaExportDesc magic/version for peer " << peerRank);
-            return BM_INVALID_PARAM;
-        }
-        if (exportDesc.hcommDescLen == 0 || exportDesc.size == 0) {
-            BM_LOG_ERROR("Empty export desc for peer " << peerRank);
-            return BM_INVALID_PARAM;
-        }
-        uint32_t hcommDescLen = exportDesc.hcommDescLen;
-        uint32_t flagDescLen = exportDesc.devTransFlagDescLen;
-        HcommCommMem hcommOut{};
-        auto ret = DlHcommApi::HcommMemImport(localEndpoint_->hcommEndpoint, payload + sizeof(UrmaExportDesc),
-                                              hcommDescLen, &hcommOut);
-        if (ret != 0) {
+        const auto &exportDesc = parsed.exportDesc;
+        const auto *payload = parsed.payload;
+        const uint32_t hcommDescLen = exportDesc.hcommDescLen;
+        const uint32_t flagDescLen = exportDesc.devTransFlagDescLen;
+        UrmaCommMem imported{};
+        ret = manager_.HcommMemImport(localEndpoint_, payload, parsed.memDescLen, &imported);
+        if (ret != BM_OK) {
             BM_LOG_ERROR("Failed to HcommMemImport for peer " << peerRank << " ret: " << ret << " addr: " << std::hex
                                                               << exportDesc.addr);
-            return BM_ERROR;
+            return ret;
         }
         RemoteRegistration reg{};
-        reg.exportedAddr = exportDesc.addr;
+        reg.exportedAddr = parsed.remoteAddr;
         reg.size = exportDesc.size;
         reg.memTag = exportDesc.memTag;
-        reg.view.addr = reinterpret_cast<uint64_t>(hcommOut.addr);
-        reg.view.size = hcommOut.size;
-        reg.view.type = UrmaMemoryType::HOST_DRAM;
-        reg.descBytes.resize(sizeof(UrmaExportDesc) + hcommDescLen);
-        std::memcpy(reg.descBytes.data(), payload, sizeof(UrmaExportDesc) + hcommDescLen);
+        reg.view = imported;
+        reg.descBytes.resize(parsed.memDescLen);
+        std::memcpy(reg.descBytes.data(), payload, parsed.memDescLen);
         auto valRet = ValidateImportedGva(peerRank, reg.exportedAddr, reg.size, exportDesc, reg.view);
         if (valRet != BM_OK) {
             (void)manager_.HcommMemUnimport(localEndpoint_, reg.descBytes.data(), reg.descBytes.size());
             return valRet;
         }
         state.imports.push_back(reg);
-        if (flagDescLen > 0 && !flagImported) {
+        if (exportDesc.memoryType == UrmaMemoryType::HOST_DRAM && flagDescLen > 0 && !flagImported) {
             HcommCommMem hcommFlagOut{};
             auto flagRet =
                 DlHcommApi::HcommMemImport(localEndpoint_->hcommEndpoint,
@@ -606,14 +563,9 @@ Result HostUrmaTransportManager::ValidateImportedGva(uint32_t peerRank, uint64_t
         BM_LOG_ERROR("Import view is empty for peer " << peerRank);
         return BM_NOT_SUPPORTED;
     }
-    if (exportDesc.addr != exportedAddr || exportDesc.size != exportedSize) {
-        BM_LOG_ERROR("Export descriptor mismatch for peer " << peerRank << " exportDesc.addr: " << std::hex
-                                                            << exportDesc.addr << " exportedAddr: " << exportedAddr);
-        return BM_NOT_SUPPORTED;
-    }
-    if (view.addr != exportedAddr) {
-        BM_LOG_ERROR("Import view addr != exported addr for peer " << peerRank << " view.addr: " << std::hex
-                                                                   << view.addr << " exportedAddr: " << exportedAddr);
+    if (exportDesc.size != exportedSize) {
+        BM_LOG_ERROR("Export descriptor size mismatch for peer " << peerRank << " exportDesc.size: " << exportDesc.size
+                                                                 << " exportedSize: " << exportedSize);
         return BM_NOT_SUPPORTED;
     }
     if (view.size < exportedSize) {
@@ -621,9 +573,21 @@ Result HostUrmaTransportManager::ValidateImportedGva(uint32_t peerRank, uint64_t
                                                             << " exportedSize: " << exportedSize);
         return BM_NOT_SUPPORTED;
     }
-    if (exportDesc.memoryType != UrmaMemoryType::HOST_DRAM) {
-        BM_LOG_ERROR("Unexpected memory type for peer " << peerRank
-                                                        << " type: " << static_cast<int>(exportDesc.memoryType));
+    if (exportDesc.memoryType == UrmaMemoryType::HOST_DRAM &&
+        (exportDesc.addr != exportedAddr || view.addr != exportedAddr || view.type != UrmaMemoryType::HOST_DRAM)) {
+        BM_LOG_ERROR("Invalid Host DRAM import for peer "
+                     << peerRank << " exportedAddr: " << std::hex << exportedAddr << " descAddr: " << exportDesc.addr
+                     << " viewAddr: " << view.addr << std::dec << " viewType: " << view.type);
+        return BM_NOT_SUPPORTED;
+    }
+    if (exportDesc.memoryType == UrmaMemoryType::DEVICE_HBM && view.type != UrmaMemoryType::DEVICE_HBM) {
+        BM_LOG_ERROR("Invalid Device HBM import for peer " << peerRank << " gva: " << std::hex << exportedAddr
+                                                           << " viewAddr: " << view.addr << std::dec
+                                                           << " viewType: " << view.type);
+        return BM_NOT_SUPPORTED;
+    }
+    if (exportDesc.memoryType != UrmaMemoryType::HOST_DRAM && exportDesc.memoryType != UrmaMemoryType::DEVICE_HBM) {
+        BM_LOG_ERROR("Unexpected memory type for peer " << peerRank << " type: " << exportDesc.memoryType);
         return BM_NOT_SUPPORTED;
     }
     return BM_OK;

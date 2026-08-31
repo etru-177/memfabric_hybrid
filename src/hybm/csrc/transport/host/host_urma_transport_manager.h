@@ -97,7 +97,6 @@ private:
     Result ValidateInitialPeerSetLocked(const HybmTransPrepareOptions &options, RemoteRankState &state);
     Result PreparePeerMemoryKeysLocked(uint32_t peerRank, const std::vector<TransportMemoryKey> &memKeys,
                                        RemoteRankState &state);
-    Result ValidateDevicePeerMemoryKeysLocked(uint32_t peerRank, const std::vector<TransportMemoryKey> &memKeys) const;
     Result ImportRemoteMemKeysLocked(uint32_t peerRank, const std::vector<TransportMemoryKey> &memKeys,
                                      RemoteRankState &state);
     Result ValidateImportedGva(uint32_t peerRank, uint64_t exportedAddr, uint64_t exportedSize,

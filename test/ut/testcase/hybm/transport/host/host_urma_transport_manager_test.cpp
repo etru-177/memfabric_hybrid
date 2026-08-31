@@ -56,6 +56,15 @@ struct HcommPrepareGuard {
     }
 };
 
+struct HcommImportGuard {
+    hcommMemImportFunc oldImport{DlHcommApi::gHcommMemImport};
+
+    ~HcommImportGuard()
+    {
+        DlHcommApi::gHcommMemImport = oldImport;
+    }
+};
+
 UrmaEndpointDesc MakeEndpointDesc()
 {
     UrmaEndpointDesc desc{};
@@ -107,6 +116,15 @@ int32_t ChannelReady(const ChannelHandle *channels, uint32_t count, int32_t *sta
     EXPECT_EQ(count, 1U);
     EXPECT_EQ(channels[0], TEST_CHANNEL);
     *statuses = 0;
+    return 0;
+}
+
+int32_t ImportDeviceMemory(EndpointHandle endpoint, const void *, uint32_t descLen, HcommCommMem *memory)
+{
+    EXPECT_EQ(endpoint, TEST_ENDPOINT);
+    EXPECT_EQ(descLen, 1U);
+    memory->addr = reinterpret_cast<void *>(HCOMM_ADDR);
+    memory->size = TEST_SIZE;
     return 0;
 }
 
@@ -180,6 +198,8 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsFallsBackToPrepareForNewPeer
 
 TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerMemoryKeysThroughPrepare)
 {
+    HcommImportGuard guard;
+    DlHcommApi::gHcommMemImport = ImportDeviceMemory;
     HostUrmaTransportManager manager;
     auto endpoint = MakeEndpointDesc();
     endpoint.loc.locType = ENDPOINT_LOC_TYPE_DEVICE;
@@ -187,12 +207,19 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerM
     state.endpointDesc = endpoint;
     state.channel = TEST_CHANNEL;
     manager.opened_ = true;
+    manager.localEndpoint_ = std::make_shared<urma::UrmaEndpointEntity>();
+    manager.localEndpoint_->hcommEndpoint = TEST_ENDPOINT;
+    manager.localEndpoint_->desc.loc.locType = ENDPOINT_LOC_TYPE_HOST;
 
     HybmTransPrepareOptions options{};
     options.options[REMOTE_RANK].privateData = MakePrivateData(endpoint);
     options.options[REMOTE_RANK].memKeys.emplace_back(MakeDeviceMemoryKey());
 
     EXPECT_EQ(manager.UpdateRankOptions(options), BM_OK);
+    ASSERT_EQ(state.imports.size(), 1U);
+    EXPECT_EQ(state.imports[0].exportedAddr, REMOTE_ADDR);
+    EXPECT_EQ(state.imports[0].view.addr, HCOMM_ADDR);
+    EXPECT_EQ(state.imports[0].view.type, UrmaMemoryType::DEVICE_HBM);
     manager.opened_ = false;
 }
 

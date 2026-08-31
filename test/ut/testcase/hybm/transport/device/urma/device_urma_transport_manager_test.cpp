@@ -405,7 +405,7 @@ int32_t MockHcommMemImport(EndpointHandle endpoint, const void *memDesc, uint32_
     EXPECT_NE(memDesc, nullptr);
     EXPECT_EQ(descLen, MOCK_HCOMM_DESC_LEN);
     EXPECT_NE(commMem, nullptr);
-    commMem->type = COMM_MEM_TYPE_HOST;
+    commMem->type = COMM_MEM_TYPE_DEVICE;
     commMem->addr = reinterpret_cast<void *>(MOCK_REMOTE_ADDR);
     commMem->size = MOCK_SIZE;
     return BM_OK;
@@ -2666,9 +2666,9 @@ TEST(DeviceUrmaTransportManagerTest, ImportRemoteMemKeysRejectsMalformedPayloads
 
     g_memImportCallCount = 0;
     DlHcommApi::gHcommMemImport = MockHcommMemImportSecondInvalidType;
-    EXPECT_EQ(manager.ImportRemoteMemKeysLocked(1, state, {flagKey}), BM_INVALID_PARAM);
-    EXPECT_TRUE(state.imports.empty());
-    EXPECT_TRUE(state.remoteFlagDescBytes.empty());
+    EXPECT_EQ(manager.ImportRemoteMemKeysLocked(1, state, {flagKey}), BM_OK);
+    EXPECT_EQ(state.imports.size(), 1U);
+    EXPECT_EQ(state.remoteFlagDescBytes.size(), MOCK_HCOMM_DESC_LEN);
 }
 
 TEST(DeviceUrmaTransportManagerTest, BuildsDeviceBatchCopyRouteWithDistinctGvaAndHcommView)
