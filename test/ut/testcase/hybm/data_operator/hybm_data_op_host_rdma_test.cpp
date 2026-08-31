@@ -355,6 +355,22 @@ TEST_F(HybmDataOpHostRdmaTest, data_copy_local_host_to_global_host_different_ran
     ASSERT_EQ(1UL, transportManagerMock_->writeRemoteCount);
 }
 
+TEST_F(HybmDataOpHostRdmaTest, data_copy_local_host_to_global_device_different_rank)
+{
+    auto ret = dataOp_->Initialize();
+    ASSERT_EQ(BM_OK, ret);
+
+    hybm_copy_params params{};
+    params.dataSize = 1024ULL;
+    ock::mf::ExtOptions options{};
+    options.srcRankId = rankId_;
+    options.destRankId = rankId_ + 1;
+
+    ret = dataOp_->DataCopy(params, HYBM_LOCAL_HOST_TO_GLOBAL_DEVICE, options);
+    ASSERT_EQ(BM_OK, ret);
+    ASSERT_EQ(1UL, transportManagerMock_->writeRemoteCount);
+}
+
 TEST_F(HybmDataOpHostRdmaTest, data_copy_local_device_to_global_host_same_rank)
 {
     // 测试本地设备到全局主机的拷贝（同rank）
