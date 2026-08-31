@@ -29,7 +29,7 @@ pybind_extension(
         "pymf_acc_offload.cpp",
     ],
     local_defines = [] + COMMON_LOCAL_DEFINES,
-    copts = [] + COMMON_COPTS,
+    copts = COMMON_COPTS + ["-O3"],
     linkopts = [
         "-Wl,-z,noexecstack,-z,relro,-z,now",
         "-s",

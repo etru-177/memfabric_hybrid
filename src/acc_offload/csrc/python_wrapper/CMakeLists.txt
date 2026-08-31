@@ -13,6 +13,7 @@ if (CMAKE_C_COMPILER STREQUAL "gcc")
 endif ()
 add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
 add_library(pymf_acc_offload OBJECT pymf_acc_offload.cpp)
+target_compile_options(pymf_acc_offload PRIVATE -O3)
 
 if ((BUILD_PYTHON STREQUAL "ON") AND (NOT BUILD_UT STREQUAL "ON"))
     find_program(PYTHON_EXECUTABLE NAMES python3 python)
@@ -41,6 +42,7 @@ print(os.path.dirname(pybind11.__file__),end='');"
             ${pybind11_INCLUDE_DIRS}
     )
     pybind11_add_module(_pymf_acc_offload pymf_acc_offload.cpp)
+    target_compile_options(_pymf_acc_offload PRIVATE -O3)
     set_target_properties(_pymf_acc_offload PROPERTIES CXX_STANDARD 17)
     set_target_properties(_pymf_acc_offload PROPERTIES OUTPUT_NAME "_pymf_acc_offload")
     target_link_libraries(_pymf_acc_offload PRIVATE acc_offload_shared)
