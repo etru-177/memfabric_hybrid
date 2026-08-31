@@ -24,6 +24,7 @@ namespace {
 constexpr uint32_t REMOTE_RANK = 1U;
 constexpr uint32_t NEW_REMOTE_RANK = 2U;
 constexpr ChannelHandle TEST_CHANNEL = 7U;
+constexpr ThreadHandle TEST_THREAD = 8U;
 const EndpointHandle TEST_ENDPOINT = reinterpret_cast<EndpointHandle>(0xA501UL);
 constexpr uint64_t LOCAL_ADDR = 0x100000UL;
 constexpr uint64_t REMOTE_ADDR = 0x200000UL;
@@ -48,11 +49,15 @@ struct HcommSubmitGuard {
 struct HcommPrepareGuard {
     hcommChannelCreateFunc oldChannelCreate{DlHcommApi::gHcommChannelCreate};
     hcommChannelGetStatusFunc oldChannelGetStatus{DlHcommApi::gHcommChannelGetStatus};
+    hcommThreadAllocFunc oldThreadAlloc{DlHcommApi::gHcommThreadAlloc};
+    hcommThreadFreeFunc oldThreadFree{DlHcommApi::gHcommThreadFree};
 
     ~HcommPrepareGuard()
     {
         DlHcommApi::gHcommChannelCreate = oldChannelCreate;
         DlHcommApi::gHcommChannelGetStatus = oldChannelGetStatus;
+        DlHcommApi::gHcommThreadAlloc = oldThreadAlloc;
+        DlHcommApi::gHcommThreadFree = oldThreadFree;
     }
 };
 
@@ -119,6 +124,22 @@ int32_t ChannelReady(const ChannelHandle *channels, uint32_t count, int32_t *sta
     return 0;
 }
 
+int32_t AllocThread(CommEngine engine, uint32_t count, const uint32_t *notifyNumPerThread, ThreadHandle *threads)
+{
+    EXPECT_EQ(engine, COMM_ENGINE_CPU);
+    EXPECT_EQ(count, 1U);
+    EXPECT_EQ(*notifyNumPerThread, 0U);
+    *threads = TEST_THREAD;
+    return 0;
+}
+
+int32_t FreeThread(const ThreadHandle *threads, uint32_t count)
+{
+    EXPECT_EQ(count, 1U);
+    EXPECT_EQ(*threads, TEST_THREAD);
+    return 0;
+}
+
 int32_t ImportDeviceMemory(EndpointHandle endpoint, const void *, uint32_t descLen, HcommCommMem *memory)
 {
     EXPECT_EQ(endpoint, TEST_ENDPOINT);
@@ -156,6 +177,7 @@ TEST(HostUrmaTransportManagerTest, WriteRemoteRetriesAfterQueueFull)
     HostUrmaTransportManager manager;
     auto &state = manager.remoteRanks_[REMOTE_RANK];
     state.channel = TEST_CHANNEL;
+    state.thread = TEST_THREAD;
     HostUrmaTransportManager::RemoteRegistration registration{};
     registration.exportedAddr = REMOTE_ADDR;
     registration.size = TEST_SIZE;
@@ -186,6 +208,8 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsFallsBackToPrepareForNewPeer
     HcommPrepareGuard guard;
     DlHcommApi::gHcommChannelCreate = CreateChannel;
     DlHcommApi::gHcommChannelGetStatus = ChannelReady;
+    DlHcommApi::gHcommThreadAlloc = AllocThread;
+    DlHcommApi::gHcommThreadFree = FreeThread;
 
     HostUrmaTransportManager manager;
     manager.opened_ = true;
@@ -204,6 +228,7 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsFallsBackToPrepareForNewPeer
     EXPECT_TRUE(g_channelCreated);
     ASSERT_EQ(manager.remoteRanks_.count(NEW_REMOTE_RANK), 1U);
     EXPECT_EQ(manager.remoteRanks_[NEW_REMOTE_RANK].channel, TEST_CHANNEL);
+    EXPECT_EQ(manager.remoteRanks_[NEW_REMOTE_RANK].thread, TEST_THREAD);
 
     manager.opened_ = false;
 }
@@ -218,6 +243,7 @@ TEST(HostUrmaTransportManagerTest, UpdateRankOptionsProcessesExistingDevicePeerM
     auto &state = manager.remoteRanks_[REMOTE_RANK];
     state.endpointDesc = endpoint;
     state.channel = TEST_CHANNEL;
+    state.thread = TEST_THREAD;
     manager.opened_ = true;
     manager.localEndpoint_ = std::make_shared<urma::UrmaEndpointEntity>();
     manager.localEndpoint_->hcommEndpoint = TEST_ENDPOINT;

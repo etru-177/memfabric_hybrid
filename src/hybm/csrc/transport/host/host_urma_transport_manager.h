@@ -80,6 +80,7 @@ private:
         UrmaEndpointDesc endpointDesc{};
         HcommChannelDesc channelDesc{};
         ChannelHandle channel{0};
+        ThreadHandle thread{0};
         std::vector<RemoteRegistration> imports{};
         uint64_t remoteFlagAddr{0};
         uint64_t remoteFlagSize{0};

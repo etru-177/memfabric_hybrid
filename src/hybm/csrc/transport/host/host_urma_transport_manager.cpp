@@ -27,6 +27,7 @@ constexpr uint64_t HOST_TRANSFER_FLAG_SIZE = sizeof(uint64_t);
 constexpr uint64_t URMA_CHANNEL_DESC_NUM = 1;
 constexpr int32_t HCOMM_E_AGAIN = 20; // Aligned with HCCL_E_AGAIN without depending on HCCL headers.
 constexpr uint32_t HCOMM_SUBMIT_MAX_RETRIES = 3U;
+constexpr uint32_t HCOMM_NORMAL_NOTIFY_NUM = 0U;
 constexpr const char *ENV_HOST_URMA_EID = "MF_HOST_URMA_EID";
 
 bool ContainsAddressRange(uint64_t outerAddr, uint64_t outerSize, uint64_t innerAddr, uint64_t innerSize)
@@ -489,8 +490,20 @@ Result HostUrmaTransportManager::PreparePeerLocked(uint32_t peerRank, const Tran
         }
         return ret;
     }
+    ThreadHandle thread = 0;
+    ret = DlHcommApi::HcommThreadAlloc(COMM_ENGINE_CPU, 1, &HCOMM_NORMAL_NOTIFY_NUM, &thread);
+    if (ret != 0 || thread == 0) {
+        BM_LOG_ERROR("Failed to allocate Host URMA thread for peer " << peerRank << " ret: " << ret);
+        const auto destroyRet = DlHcommApi::HcommChannelDestroy(&channel, URMA_CHANNEL_DESC_NUM);
+        if (destroyRet != 0) {
+            BM_LOG_ERROR("Host URMA rollback HcommChannelDestroy failed after thread allocation, peerRank: "
+                         << peerRank << " ret: " << destroyRet);
+        }
+        return BM_ERROR;
+    }
     state.channelDesc = channelDesc;
     state.channel = channel;
+    state.thread = thread;
     BM_LOG_INFO("Host URMA channel ready with peer "
                 << peerRank << " channel: " << channel
                 << " role: " << (channelDesc.role == HCOMM_SOCKET_ROLE_CLIENT ? "CLIENT" : "SERVER"));
@@ -501,8 +514,8 @@ Result HostUrmaTransportManager::ValidateInitialPeerSetLocked(const HybmTransPre
                                                               RemoteRankState &state)
 {
     (void)options;
-    if (state.channel == 0) {
-        BM_LOG_ERROR("Peer rank state has no channel but was previously prepared");
+    if (state.channel == 0 || state.thread == 0) {
+        BM_LOG_ERROR("Peer rank state has no channel or thread but was previously prepared");
         return BM_ERROR;
     }
     return BM_OK;
@@ -638,18 +651,28 @@ Result HostUrmaTransportManager::ResolveRemoteAddressLocked(const RemoteRankStat
 
 Result HostUrmaTransportManager::DestroyRemoteChannelLocked(uint32_t peerRank, RemoteRankState &state)
 {
-    if (state.channel == 0) {
-        return BM_OK;
+    Result finalRet = BM_OK;
+    if (state.channel != 0) {
+        const auto channel = state.channel;
+        const auto ret = DlHcommApi::HcommChannelDestroy(&state.channel, 1);
+        state.channel = 0;
+        if (ret != 0) {
+            BM_LOG_ERROR("HcommChannelDestroy failed, rankId: " << rankId_ << " peerRank: " << peerRank
+                                                                << " channel: " << channel << " ret: " << ret);
+            finalRet = BM_ERROR;
+        }
     }
-    const auto channel = state.channel;
-    auto ret = DlHcommApi::HcommChannelDestroy(&state.channel, 1);
-    state.channel = 0;
-    if (ret != 0) {
-        BM_LOG_ERROR("HcommChannelDestroy failed, rankId: " << rankId_ << " peerRank: " << peerRank
-                                                            << " channel: " << channel << " ret: " << ret);
-        return BM_ERROR;
+    if (state.thread != 0) {
+        const auto thread = state.thread;
+        const auto ret = DlHcommApi::HcommThreadFree(&state.thread, 1);
+        state.thread = 0;
+        if (ret != 0) {
+            BM_LOG_ERROR("HcommThreadFree failed, rankId: " << rankId_ << " peerRank: " << peerRank
+                                                            << " thread: " << thread << " ret: " << ret);
+            finalRet = BM_ERROR;
+        }
     }
-    return BM_OK;
+    return finalRet;
 }
 
 Result HostUrmaTransportManager::UnimportRemoteResourcesLocked(uint32_t peerRank, RemoteRankState &state)
@@ -855,10 +878,11 @@ Result HostUrmaTransportManager::SubmitRemoteIo(RemoteRankState &state, uint32_t
                                                 uint64_t remoteAddr, uint64_t hcommAddr, uint64_t size, bool write)
 {
     for (uint32_t retry = 0; retry <= HCOMM_SUBMIT_MAX_RETRIES; ++retry) {
-        int32_t hcomRet = write ? DlHcommApi::HcommWriteOnThread(0, state.channel, reinterpret_cast<void *>(hcommAddr),
-                                                                 reinterpret_cast<const void *>(localAddr), size)
-                                : DlHcommApi::HcommReadOnThread(0, state.channel, reinterpret_cast<void *>(localAddr),
-                                                                reinterpret_cast<const void *>(hcommAddr), size);
+        int32_t hcomRet =
+            write ? DlHcommApi::HcommWriteOnThread(state.thread, state.channel, reinterpret_cast<void *>(hcommAddr),
+                                                   reinterpret_cast<const void *>(localAddr), size)
+                  : DlHcommApi::HcommReadOnThread(state.thread, state.channel, reinterpret_cast<void *>(localAddr),
+                                                  reinterpret_cast<const void *>(hcommAddr), size);
         if (hcomRet == 0) {
             state.pending = true;
             return BM_OK;
@@ -939,10 +963,10 @@ Result HostUrmaTransportManager::FenceRank(RemoteRankState &state, uint32_t rank
     if (!state.pending) {
         return BM_OK;
     }
-    auto ret = DlHcommApi::HcommChannelFenceOnThread(0, state.channel);
+    auto ret = DlHcommApi::HcommChannelFenceOnThread(state.thread, state.channel);
     if (ret != 0) {
         BM_LOG_ERROR("HcommChannelFenceOnThread failed, rankId: " << rankId << " channel: " << state.channel
-                                                                  << " thread: 0 ret: " << ret);
+                                                                  << " thread: " << state.thread << " ret: " << ret);
         return BM_ERROR;
     }
     state.pending = false;
