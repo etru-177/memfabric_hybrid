@@ -81,7 +81,9 @@ void GatherDynamic(uint8_t *__restrict dst, const uint8_t *__restrict src, uint6
 void GatherSegments(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request,
                     std::vector<uint64_t> &latencies)
 {
-    if (request.segmentBytes == 576U) {
+    if (request.segmentBytes == 656U) {
+        GatherFixed<656>(dst, src, request.srcStride, request.segmentCount, latencies);
+    } else if (request.segmentBytes == 576U) {
         GatherFixed<576>(dst, src, request.srcStride, request.segmentCount, latencies);
     } else if (request.segmentBytes == 1152U) {
         GatherFixed<1152>(dst, src, request.srcStride, request.segmentCount, latencies);

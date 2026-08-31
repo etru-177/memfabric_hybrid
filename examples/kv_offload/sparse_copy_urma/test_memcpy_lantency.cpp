@@ -40,6 +40,23 @@ struct BenchmarkResult {
     double bandwidthGiBs;
 };
 
+template <size_t Bytes>
+struct FixedCopier {
+    __attribute__((always_inline)) inline void operator()(void *dst, const void *src) const
+    {
+        __builtin_memcpy(dst, src, Bytes);
+    }
+};
+
+struct DynamicCopier {
+    size_t bytes;
+
+    void operator()(void *dst, const void *src) const
+    {
+        std::memcpy(dst, src, bytes);
+    }
+};
+
 bool ParsePositiveInteger(const char *text, uint64_t &value)
 {
     char *end = nullptr;
@@ -79,7 +96,8 @@ size_t BufferOffset(uint64_t round, size_t bytes, bool streaming)
     return streaming ? static_cast<size_t>(round) * bytes : 0U;
 }
 
-BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, bool streaming)
+template <typename Copier>
+BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, bool streaming, const Copier &copy)
 {
     constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
     constexpr double nanosecondsPerSecond = 1e9;
@@ -96,7 +114,7 @@ BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, bool streaming)
         if (streaming && rounds - round > 4U) {
             __builtin_prefetch(source.data() + (static_cast<size_t>(round) + 4U) * bytes * 2U, 0, 1);
         }
-        std::memcpy(destination.data() + dstOffset, source.data() + srcOffset, bytes);
+        copy(destination.data() + dstOffset, source.data() + srcOffset);
         CompilerBarrier(destination.data() + dstOffset);
     }
     const auto throughputEnd = Clock::now();
@@ -108,7 +126,7 @@ BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, bool streaming)
             __builtin_prefetch(source.data() + (static_cast<size_t>(round) + 4U) * bytes * 2U, 0, 1);
         }
         const auto begin = Clock::now();
-        std::memcpy(destination.data() + dstOffset, source.data() + srcOffset, bytes);
+        copy(destination.data() + dstOffset, source.data() + srcOffset);
         const auto end = Clock::now();
         CompilerBarrier(destination.data() + dstOffset);
         latencies.push_back(
@@ -117,6 +135,16 @@ BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, bool streaming)
     const double elapsedNs = std::chrono::duration<double, std::nano>(throughputEnd - throughputBegin).count();
     const double bandwidth = static_cast<double>(rounds) * bytes * nanosecondsPerSecond / elapsedNs / bytesPerGiB;
     return {streaming ? "strided" : "hot", CalculateStats(std::move(latencies)), bandwidth};
+}
+
+std::vector<BenchmarkResult> RunBenchmarks(uint64_t rounds, size_t bytes)
+{
+    if (bytes == 656U) {
+        const FixedCopier<656> copy{};
+        return {MeasureMemcpy(rounds, bytes, false, copy), MeasureMemcpy(rounds, bytes, true, copy)};
+    }
+    const DynamicCopier copy{bytes};
+    return {MeasureMemcpy(rounds, bytes, false, copy), MeasureMemcpy(rounds, bytes, true, copy)};
 }
 
 void PrintStats(uint64_t rounds, size_t bytes, const std::vector<BenchmarkResult> &results)
@@ -167,10 +195,7 @@ int main(int argc, char **argv)
         std::cerr << "Buffer size overflow: rounds=" << rounds << ", bytes=" << bytes << '\n';
         return 1;
     }
-    const std::vector<BenchmarkResult> results = {
-        MeasureMemcpy(rounds, copyBytes, false),
-        MeasureMemcpy(rounds, copyBytes, true),
-    };
+    const auto results = RunBenchmarks(rounds, copyBytes);
     PrintStats(rounds, copyBytes, results);
     return 0;
 }

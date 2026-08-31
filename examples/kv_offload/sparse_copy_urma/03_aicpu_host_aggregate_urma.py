@@ -171,13 +171,13 @@ def run_host(args, handle, bm, listener, layout):
     from _pymf_acc_offload import offload
 
     conn, _ = listener.accept()
-    stages = {"request wait": [], "gather": [], "URMA write": [], "ready signal": [], "host total": []}
+    stages = {"gather": [], "URMA write": [], "ready signal": [], "host total": []}
     copy_samples = []
     with conn:
         conn.sendall(b"R")
         for _ in range(args.rounds):
             result = offload.aggregate_wait_and_gather_demo(mailbox, source, aggregate)
-            dst_new_gva, ready_gva, request_bytes, wait_ns, gather_ns, copy_count = result[:6]
+            dst_new_gva, ready_gva, request_bytes, _, gather_ns, copy_count = result[:6]
             write_begin = time.perf_counter_ns()
             assert handle.copy_data(aggregate, dst_new_gva, request_bytes, bm.BmCopyType.H2G, 0) == 0
             write_end = time.perf_counter_ns()
@@ -187,7 +187,6 @@ def run_host(args, handle, bm, listener, layout):
             assert conn.recv(1) == b"D"
             write_ns = write_end - write_begin
             ready_ns = ready_end - write_end
-            stages["request wait"].append(wait_ns)
             stages["gather"].append(gather_ns)
             stages["URMA write"].append(write_ns)
             stages["ready signal"].append(ready_ns)
@@ -211,7 +210,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
                               args.segments, args.segment_bytes, 0), 0)
     zero = ctypes.c_uint64(0)
     timing = Timing()
-    stages = {"request": [], "wait host": [], "scatter": [], "AICPU e2e": [], "launch sync": []}
+    stages = {"scatter": [], "AICPU e2e": [], "launch sync": []}
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
@@ -230,8 +229,6 @@ def run_npu(args, handle, bm, runtime_device, layout):
             launch_end = time.perf_counter_ns()
             assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
                                     bm.BmCopyType.G2H, 0) == 0
-            stages["request"].append(timing.request_ns)
-            stages["wait host"].append(timing.wait_host_ns)
             stages["scatter"].append(timing.scatter_ns)
             stages["AICPU e2e"].append(timing.total_ns)
             stages["launch sync"].append(launch_end - launch_begin)
