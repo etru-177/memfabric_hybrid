@@ -29,6 +29,16 @@ constexpr int32_t HCOMM_E_AGAIN = 20; // Aligned with HCCL_E_AGAIN without depen
 constexpr uint32_t HCOMM_SUBMIT_MAX_RETRIES = 3U;
 constexpr const char *ENV_HOST_URMA_EID = "MF_HOST_URMA_EID";
 
+bool ContainsAddressRange(uint64_t outerAddr, uint64_t outerSize, uint64_t innerAddr, uint64_t innerSize)
+{
+    uint64_t outerEnd = 0;
+    uint64_t innerEnd = 0;
+    const UrmaCommMem outer{outerAddr, outerSize, UrmaMemoryType::HOST_DRAM};
+    const UrmaCommMem inner{innerAddr, innerSize, UrmaMemoryType::HOST_DRAM};
+    return GetRangeEnd(outer, outerEnd) && GetRangeEnd(inner, innerEnd) && outerAddr <= innerAddr &&
+           outerEnd >= innerEnd;
+}
+
 struct ParsedRemoteMemKey {
     uint64_t remoteAddr{0};
     UrmaExportDesc exportDesc{};
@@ -294,6 +304,23 @@ Result HostUrmaTransportManager::ResolveExportedGvaLocked(const TransportMemoryR
     return BM_OK;
 }
 
+Result HostUrmaTransportManager::FindLocalRegistrationLocked(uint64_t addr, uint64_t size,
+                                                             LocalRegistration *registration) const
+{
+    if (addr == 0 || size == 0 || !ContainsAddressRange(addr, size, addr, size)) {
+        return BM_INVALID_PARAM;
+    }
+    for (const auto &item : localRegistrations_) {
+        if (ContainsAddressRange(item.second.mr.addr, item.second.mr.size, addr, size)) {
+            if (registration != nullptr) {
+                *registration = item.second;
+            }
+            return BM_OK;
+        }
+    }
+    return BM_INVALID_PARAM;
+}
+
 Result HostUrmaTransportManager::UnregisterMemoryRegion(uint64_t addr)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -318,11 +345,7 @@ Result HostUrmaTransportManager::UnregisterMemoryRegion(uint64_t addr)
 bool HostUrmaTransportManager::QueryHasRegistered(uint64_t addr, uint64_t size)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = localRegistrations_.find(addr);
-    if (it == localRegistrations_.end()) {
-        return false;
-    }
-    return it->second.mr.size >= size;
+    return FindLocalRegistrationLocked(addr, size, nullptr) == BM_OK;
 }
 
 Result HostUrmaTransportManager::QueryMemoryKey(uint64_t addr, TransportMemoryKey &key)

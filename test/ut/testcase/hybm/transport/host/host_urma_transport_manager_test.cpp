@@ -169,6 +169,18 @@ TEST(HostUrmaTransportManagerTest, WriteRemoteRetriesAfterQueueFull)
     EXPECT_TRUE(state.pending);
 }
 
+TEST(HostUrmaTransportManagerTest, QueryHasRegisteredAcceptsSubrange)
+{
+    HostUrmaTransportManager manager;
+    HostUrmaTransportManager::LocalRegistration registration{};
+    registration.mr.addr = LOCAL_ADDR;
+    registration.mr.size = TEST_SIZE;
+    manager.localRegistrations_.emplace(LOCAL_ADDR, registration);
+
+    EXPECT_TRUE(manager.QueryHasRegistered(LOCAL_ADDR + 64U, TEST_SIZE - 64U));
+    EXPECT_FALSE(manager.QueryHasRegistered(LOCAL_ADDR + 64U, TEST_SIZE));
+}
+
 TEST(HostUrmaTransportManagerTest, UpdateRankOptionsFallsBackToPrepareForNewPeerWithoutHoldingLock)
 {
     HcommPrepareGuard guard;
