@@ -20,6 +20,7 @@
 #include <limits>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -31,6 +32,12 @@ struct LatencyStats {
     uint64_t maxNs;
     uint64_t p95Ns;
     uint64_t p99Ns;
+};
+
+struct BenchmarkResult {
+    const char *mode;
+    LatencyStats latency;
+    double bandwidthGiBs;
 };
 
 bool ParsePositiveInteger(const char *text, uint64_t &value)
@@ -67,33 +74,55 @@ void CompilerBarrier(const void *memory)
 #endif
 }
 
-std::vector<uint64_t> MeasureMemcpy(uint64_t rounds, size_t bytes)
+size_t BufferOffset(uint64_t round, size_t bytes, bool streaming)
 {
-    std::vector<uint8_t> source(bytes, 0x5A);
-    std::vector<uint8_t> destination(bytes, 0);
+    return streaming ? static_cast<size_t>(round) * bytes : 0U;
+}
+
+BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, bool streaming)
+{
+    constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
+    constexpr double nanosecondsPerSecond = 1e9;
+    const size_t copies = streaming ? static_cast<size_t>(rounds) : 1U;
+    std::vector<uint8_t> source(copies * bytes * (streaming ? 2U : 1U), 0x5A);
+    std::vector<uint8_t> destination(copies * bytes, 0);
     std::vector<uint64_t> latencies;
     latencies.reserve(static_cast<size_t>(rounds));
 
+    const auto throughputBegin = Clock::now();
     for (uint64_t round = 0; round < rounds; ++round) {
+        const size_t dstOffset = BufferOffset(round, bytes, streaming);
+        const size_t srcOffset = streaming ? dstOffset * 2U : 0U;
+        if (streaming && rounds - round > 4U) {
+            __builtin_prefetch(source.data() + (static_cast<size_t>(round) + 4U) * bytes * 2U, 0, 1);
+        }
+        std::memcpy(destination.data() + dstOffset, source.data() + srcOffset, bytes);
+        CompilerBarrier(destination.data() + dstOffset);
+    }
+    const auto throughputEnd = Clock::now();
+
+    for (uint64_t round = 0; round < rounds; ++round) {
+        const size_t dstOffset = BufferOffset(round, bytes, streaming);
+        const size_t srcOffset = streaming ? dstOffset * 2U : 0U;
+        if (streaming && rounds - round > 4U) {
+            __builtin_prefetch(source.data() + (static_cast<size_t>(round) + 4U) * bytes * 2U, 0, 1);
+        }
         const auto begin = Clock::now();
-        std::memcpy(destination.data(), source.data(), bytes);
+        std::memcpy(destination.data() + dstOffset, source.data() + srcOffset, bytes);
         const auto end = Clock::now();
-        CompilerBarrier(destination.data());
+        CompilerBarrier(destination.data() + dstOffset);
         latencies.push_back(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()));
     }
-    return latencies;
+    const double elapsedNs = std::chrono::duration<double, std::nano>(throughputEnd - throughputBegin).count();
+    const double bandwidth = static_cast<double>(rounds) * bytes * nanosecondsPerSecond / elapsedNs / bytesPerGiB;
+    return {streaming ? "strided" : "hot", CalculateStats(std::move(latencies)), bandwidth};
 }
 
-void PrintStats(uint64_t rounds, size_t bytes, const LatencyStats &stats)
+void PrintStats(uint64_t rounds, size_t bytes, const std::vector<BenchmarkResult> &results)
 {
     constexpr int columnWidth = 14;
-    constexpr int columnCount = 8;
-    constexpr double nanosecondsPerSecond = 1e9;
-    constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
-    const double bandwidthGiBs = stats.averageNs > 0.0
-        ? static_cast<double>(bytes) * nanosecondsPerSecond / stats.averageNs / bytesPerGiB
-        : 0.0;
+    constexpr int columnCount = 9;
     const auto printSeparator = [=]() {
         for (int column = 0; column < columnCount; ++column) {
             std::cout << '+' << std::string(columnWidth, '-');
@@ -101,18 +130,23 @@ void PrintStats(uint64_t rounds, size_t bytes, const LatencyStats &stats)
         std::cout << "+\n";
     };
 
-    std::cout << "memcpy latency statistics\n";
+    std::cout << "memcpy benchmark: rounds=" << rounds << ", bytes/copy=" << bytes << '\n';
     printSeparator();
-    std::cout << '|' << std::setw(columnWidth) << "rounds " << '|' << std::setw(columnWidth) << "bytes/copy " << '|'
-              << std::setw(columnWidth) << "average(ns) " << '|' << std::setw(columnWidth) << "min(ns) " << '|'
+    std::cout << '|' << std::setw(columnWidth) << "mode " << '|' << std::setw(columnWidth) << "rounds " << '|'
+              << std::setw(columnWidth) << "bytes/copy " << '|' << std::setw(columnWidth) << "average(ns) " << '|'
+              << std::setw(columnWidth) << "min(ns) " << '|'
               << std::setw(columnWidth) << "max(ns) " << '|' << std::setw(columnWidth) << "P95(ns) " << '|'
               << std::setw(columnWidth) << "P99(ns) " << '|' << std::setw(columnWidth) << "GiB/s " << "|\n";
     printSeparator();
-    std::cout << '|' << std::setw(columnWidth) << rounds << '|' << std::setw(columnWidth) << bytes << '|' << std::fixed
-              << std::setprecision(1) << std::setw(columnWidth) << stats.averageNs << '|' << std::setw(columnWidth)
-              << stats.minNs << '|' << std::setw(columnWidth) << stats.maxNs << '|' << std::setw(columnWidth)
-              << stats.p95Ns << '|' << std::setw(columnWidth) << stats.p99Ns << '|' << std::setw(columnWidth)
-              << std::setprecision(2) << bandwidthGiBs << "|\n";
+    for (const auto &result : results) {
+        const auto &stats = result.latency;
+        std::cout << '|' << std::setw(columnWidth) << result.mode << '|' << std::setw(columnWidth) << rounds << '|'
+                  << std::setw(columnWidth) << bytes << '|' << std::fixed << std::setprecision(1)
+                  << std::setw(columnWidth) << stats.averageNs << '|' << std::setw(columnWidth) << stats.minNs << '|'
+                  << std::setw(columnWidth) << stats.maxNs << '|' << std::setw(columnWidth) << stats.p95Ns << '|'
+                  << std::setw(columnWidth) << stats.p99Ns << '|' << std::setprecision(2) << std::setw(columnWidth)
+                  << result.bandwidthGiBs << "|\n";
+    }
     printSeparator();
 }
 } // namespace
@@ -128,7 +162,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    const auto latencies = MeasureMemcpy(rounds, static_cast<size_t>(bytes));
-    PrintStats(rounds, static_cast<size_t>(bytes), CalculateStats(latencies));
+    const size_t copyBytes = static_cast<size_t>(bytes);
+    if (rounds > std::numeric_limits<size_t>::max() / copyBytes / 2U) {
+        std::cerr << "Buffer size overflow: rounds=" << rounds << ", bytes=" << bytes << '\n';
+        return 1;
+    }
+    const std::vector<BenchmarkResult> results = {
+        MeasureMemcpy(rounds, copyBytes, false),
+        MeasureMemcpy(rounds, copyBytes, true),
+    };
+    PrintStats(rounds, copyBytes, results);
     return 0;
 }
