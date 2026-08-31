@@ -88,7 +88,12 @@ std::vector<uint64_t> MeasureMemcpy(uint64_t rounds, size_t bytes)
 void PrintStats(uint64_t rounds, size_t bytes, const LatencyStats &stats)
 {
     constexpr int columnWidth = 14;
-    constexpr int columnCount = 7;
+    constexpr int columnCount = 8;
+    constexpr double nanosecondsPerSecond = 1e9;
+    constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
+    const double bandwidthGiBs = stats.averageNs > 0.0
+        ? static_cast<double>(bytes) * nanosecondsPerSecond / stats.averageNs / bytesPerGiB
+        : 0.0;
     const auto printSeparator = [=]() {
         for (int column = 0; column < columnCount; ++column) {
             std::cout << '+' << std::string(columnWidth, '-');
@@ -101,12 +106,13 @@ void PrintStats(uint64_t rounds, size_t bytes, const LatencyStats &stats)
     std::cout << '|' << std::setw(columnWidth) << "rounds " << '|' << std::setw(columnWidth) << "bytes/copy " << '|'
               << std::setw(columnWidth) << "average(ns) " << '|' << std::setw(columnWidth) << "min(ns) " << '|'
               << std::setw(columnWidth) << "max(ns) " << '|' << std::setw(columnWidth) << "P95(ns) " << '|'
-              << std::setw(columnWidth) << "P99(ns) " << "|\n";
+              << std::setw(columnWidth) << "P99(ns) " << '|' << std::setw(columnWidth) << "GiB/s " << "|\n";
     printSeparator();
     std::cout << '|' << std::setw(columnWidth) << rounds << '|' << std::setw(columnWidth) << bytes << '|' << std::fixed
               << std::setprecision(1) << std::setw(columnWidth) << stats.averageNs << '|' << std::setw(columnWidth)
               << stats.minNs << '|' << std::setw(columnWidth) << stats.maxNs << '|' << std::setw(columnWidth)
-              << stats.p95Ns << '|' << std::setw(columnWidth) << stats.p99Ns << "|\n";
+              << stats.p95Ns << '|' << std::setw(columnWidth) << stats.p99Ns << '|' << std::setw(columnWidth)
+              << std::setprecision(2) << bandwidthGiBs << "|\n";
     printSeparator();
 }
 } // namespace
