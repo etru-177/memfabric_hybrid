@@ -55,6 +55,8 @@ _AICPU_WLIST = {
     "_hybm_src/csrc/common/hybm_define.h",
     "_hybm_src/csrc/common/hybm_types.h",
     "_hybm_src/csrc/under_api/dl_hcomm_api.h",
+    "_acc_offload_src/csrc/operators/aicpu/hybm_aggregate_urma_demo.cc",
+    "_acc_offload_src/csrc/operators/aicpu/hybm_aggregate_urma_demo.h",
     "_acc_offload_src/csrc/operators/aicpu/hybm_batch_copy.cc",
     "_acc_offload_src/csrc/operators/aicpu/hybm_batch_copy.h",
     "_acc_offload_src/csrc/operators/aicpu/hybm_kvcache_scatter_copy.cc",
