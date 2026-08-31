@@ -12,8 +12,11 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <utility>
+#include <vector>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
@@ -24,6 +27,37 @@
 
 namespace py = pybind11;
 
+namespace {
+struct MemcpyLatencyStats {
+    uint64_t count{0};
+    double averageNs{0.0};
+    uint64_t p95Ns{0};
+    uint64_t p99Ns{0};
+    uint64_t minNs{0};
+    uint64_t maxNs{0};
+};
+
+MemcpyLatencyStats CalculateMemcpyLatencyStats(std::vector<uint64_t> latencies)
+{
+    MemcpyLatencyStats stats{};
+    if (latencies.empty()) {
+        return stats;
+    }
+    std::sort(latencies.begin(), latencies.end());
+    stats.count = latencies.size();
+    stats.minNs = latencies.front();
+    stats.maxNs = latencies.back();
+    uint64_t totalNs = 0;
+    for (const auto latency : latencies) {
+        totalNs += latency;
+    }
+    stats.averageNs = static_cast<double>(totalNs) / static_cast<double>(stats.count);
+    stats.p95Ns = latencies[(stats.count * 95U + 99U) / 100U - 1U];
+    stats.p99Ns = latencies[(stats.count * 99U + 99U) / 100U - 1U];
+    return stats;
+}
+} // namespace
+
 py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t aggregate)
 {
     using Clock = std::chrono::steady_clock;
@@ -31,22 +65,30 @@ py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t
     HybmAggregateUrmaDemoRequest request{};
     uint64_t waitNs = 0;
     uint64_t gatherNs = 0;
+    std::vector<uint64_t> memcpyLatencies;
     {
         py::gil_scoped_release release;
         const auto waitBegin = Clock::now();
         while (__atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE) == 0U) {}
         const auto gatherBegin = Clock::now();
         request = message->request;
+        memcpyLatencies.reserve(request.segmentCount);
         auto *src = reinterpret_cast<const uint8_t *>(source);
         auto *dst = reinterpret_cast<uint8_t *>(aggregate);
         for (uint32_t index = 0; index < request.segmentCount; ++index) {
+            const auto copyBegin = Clock::now();
             std::memcpy(dst + index * request.segmentBytes, src + index * request.srcStride, request.segmentBytes);
+            const auto copyEnd = Clock::now();
+            memcpyLatencies.push_back(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - copyBegin).count());
         }
         const auto gatherEnd = Clock::now();
         waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherBegin - waitBegin).count();
         gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherEnd - gatherBegin).count();
     }
-    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs);
+    const auto stats = CalculateMemcpyLatencyStats(std::move(memcpyLatencies));
+    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs, stats.count,
+                          stats.averageNs, stats.p95Ns, stats.p99Ns, stats.minNs, stats.maxNs);
 }
 
 void DefineAccOffloadConfig(py::module_ &m)

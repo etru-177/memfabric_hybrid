@@ -128,9 +128,8 @@ def run_host(args, handle, bm, listener, layout):
     conn, _ = listener.accept()
     with conn:
         conn.sendall(b"R")
-        dst_new_gva, ready_gva, request_bytes, wait_ns, gather_ns = offload.aggregate_wait_and_gather_demo(
-            mailbox, source, aggregate
-        )
+        (dst_new_gva, ready_gva, request_bytes, wait_ns, gather_ns, copy_count, copy_avg_ns, copy_p95_ns,
+         copy_p99_ns, copy_min_ns, copy_max_ns) = offload.aggregate_wait_and_gather_demo(mailbox, source, aggregate)
         write_begin = time.perf_counter_ns()
         assert handle.copy_data(aggregate, dst_new_gva, request_bytes, bm.BmCopyType.H2G, 0) == 0
         write_end = time.perf_counter_ns()
@@ -141,6 +140,11 @@ def run_host(args, handle, bm, listener, layout):
         f"host bytes={total} wait_us={wait_ns / 1e3:.3f} gather_us={gather_ns / 1e3:.3f} "
         f"write_us={(write_end - write_begin) / 1e3:.3f} ready_us={(ready_end - write_end) / 1e3:.3f}"
     )
+    print("memcpy latency (instrumented; unit: ns)")
+    print("| count | bytes/copy | average | P95 | P99 | min | max |")
+    print("|------:|-----------:|--------:|----:|----:|----:|----:|")
+    print(f"| {copy_count} | {args.segment_bytes} | {copy_avg_ns:.1f} | {copy_p95_ns} | {copy_p99_ns} | "
+          f"{copy_min_ns} | {copy_max_ns} |")
 
 
 def copy_to_hbm(handle, bm, source, destination, size):
