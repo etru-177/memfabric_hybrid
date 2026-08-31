@@ -242,7 +242,7 @@ int32_t LaunchSparseCopyUrma(uint64_t srcPtrs, uint64_t dstPtrs, uint64_t lenPtr
     }
 }
 
-int32_t PrepareAggregateUrmaDemoArgs(aclrtFuncHandle function, const HybmAggregateUrmaDemoParam &param,
+int32_t PrepareAggregateUrmaDemoArgs(aclrtFuncHandle function, HybmAggregateUrmaDemoParam param,
                                      aclrtArgsHandle &argsHandle)
 {
     argsHandle = nullptr;
