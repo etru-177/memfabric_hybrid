@@ -37,6 +37,59 @@ struct MemcpyLatencyStats {
     uint64_t maxNs{0};
 };
 
+using Clock = std::chrono::steady_clock;
+constexpr uint32_t PREFETCH_DISTANCE = 4;
+
+template <size_t Bytes>
+__attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict dst, const uint8_t *__restrict src)
+{
+    __builtin_memcpy(dst, src, Bytes);
+}
+
+template <size_t Bytes>
+void GatherFixed(uint8_t *__restrict dst, const uint8_t *__restrict src, uint64_t srcStride, uint32_t segmentCount,
+    std::vector<uint64_t> &latencies)
+{
+    for (uint32_t index = 0; index < segmentCount; ++index) {
+        if (segmentCount - index > PREFETCH_DISTANCE) {
+            __builtin_prefetch(src + PREFETCH_DISTANCE * srcStride, 0, 1);
+        }
+        const auto copyBegin = Clock::now();
+        CopyFixed<Bytes>(dst, src);
+        const auto copyEnd = Clock::now();
+        latencies.emplace_back(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - copyBegin).count());
+        dst += Bytes;
+        src += srcStride;
+    }
+}
+
+void GatherDynamic(uint8_t *__restrict dst, const uint8_t *__restrict src, uint64_t srcStride, uint32_t segmentCount,
+                   uint32_t segmentBytes, std::vector<uint64_t> &latencies)
+{
+    for (uint32_t index = 0; index < segmentCount; ++index) {
+        const auto copyBegin = Clock::now();
+        std::memcpy(dst, src, segmentBytes);
+        const auto copyEnd = Clock::now();
+        latencies.emplace_back(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - copyBegin).count());
+        dst += segmentBytes;
+        src += srcStride;
+    }
+}
+
+void GatherSegments(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request,
+                    std::vector<uint64_t> &latencies)
+{
+    if (request.segmentBytes == 576U) {
+        GatherFixed<576>(dst, src, request.srcStride, request.segmentCount, latencies);
+    } else if (request.segmentBytes == 1152U) {
+        GatherFixed<1152>(dst, src, request.srcStride, request.segmentCount, latencies);
+    } else {
+        GatherDynamic(dst, src, request.srcStride, request.segmentCount, request.segmentBytes, latencies);
+    }
+}
+
 MemcpyLatencyStats CalculateMemcpyLatencyStats(std::vector<uint64_t> latencies)
 {
     MemcpyLatencyStats stats{};
@@ -60,7 +113,6 @@ MemcpyLatencyStats CalculateMemcpyLatencyStats(std::vector<uint64_t> latencies)
 
 py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t aggregate)
 {
-    using Clock = std::chrono::steady_clock;
     auto *message = reinterpret_cast<HybmAggregateUrmaDemoMessage *>(mailbox);
     HybmAggregateUrmaDemoRequest request{};
     uint64_t waitNs = 0;
@@ -75,13 +127,7 @@ py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t
         memcpyLatencies.reserve(request.segmentCount);
         auto *src = reinterpret_cast<const uint8_t *>(source);
         auto *dst = reinterpret_cast<uint8_t *>(aggregate);
-        for (uint32_t index = 0; index < request.segmentCount; ++index) {
-            const auto copyBegin = Clock::now();
-            std::memcpy(dst + index * request.segmentBytes, src + index * request.srcStride, request.segmentBytes);
-            const auto copyEnd = Clock::now();
-            memcpyLatencies.push_back(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - copyBegin).count());
-        }
+        GatherSegments(dst, src, request, memcpyLatencies);
         const auto gatherEnd = Clock::now();
         waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherBegin - waitBegin).count();
         gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherEnd - gatherBegin).count();
