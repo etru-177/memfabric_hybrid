@@ -69,7 +69,9 @@ EID_TOOL=/tmp/mf_urma_eid_query
 python3 examples/kv_offload/sparse_copy_urma/update_env_from_eid.py
 ```
 
-工具的 `--device-id` 是物理卡号；工具输出的 `MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID`、
+工具的 `--device-id` 是物理卡号；工具将 EID 映射到 UDMA/逻辑卡，并通过 DCMI 输出该逻辑卡的
+`MF_LOCAL_DRAM_AFFINITY_CPUS`（Linux cpulist，例如 `48-63`）。旧版 `libdcmi.so` 不支持查询时输出
+`unavailable`，不影响 EID 查询。工具输出的 `MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID`、
 `MF_LOCAL_DRAM_LOGICAL_DEVICE_ID` 和 EID 环境变量由更新脚本写入本目录的 `env` 文件。该脚本保留两端公共的
 `ASCEND_RT_VISIBLE_DEVICES`、`MEMFABRIC_HYBRID_EXTEND_LIB_PATH` 和 `MF_LOG_LEVEL`；Python 脚本启动时读取
 该文件并通过 `os.environ` 设置进程环境，不执行 shell。`MEMFABRIC_HYBRID_EXTEND_LIB_PATH` 应指向安装包的

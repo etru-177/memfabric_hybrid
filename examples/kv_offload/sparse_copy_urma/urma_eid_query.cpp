@@ -46,6 +46,7 @@ constexpr size_t kMaxEidsPerDevice = 32U;
 constexpr size_t kMaxDevices = 128U;
 constexpr size_t kEidHexLength = 32U;
 constexpr size_t kUrmaOutputLimit = 4U * 1024U * 1024U;
+constexpr size_t kDcmiCpuListBufferSize = 4096U;
 constexpr uint32_t kPodNpuGroupSize = 8U;
 constexpr uint32_t kPodFirstMeshDieLastNpu = 3U;
 
@@ -108,6 +109,7 @@ struct EidPair {
     std::string udma;
     std::string host_eid;
     std::string device_eid;
+    std::string affinity_cpus = "unavailable";
 };
 
 void Log(const char *level, const Options &options, int32_t logical_device_id, const char *stage,
@@ -277,6 +279,7 @@ public:
     using GetEidListFn = int32_t (*)(int32_t, int32_t, DcmiUrmaEidInfo *, int32_t *);
     using GetMainboardFn = int32_t (*)(int32_t, uint32_t *);
     using GetLogicalFn = int32_t (*)(uint32_t, uint32_t *);
+    using GetAffinityCpuInfoFn = int32_t (*)(int32_t, char *, int32_t *);
 
     ~DcmiApi()
     {
@@ -306,6 +309,11 @@ public:
             return Fail(options, logical_device_id, failure, "dcmi_symbol", 3, 0,
                         "required DCMI symbol is missing from " + path + ": " + DynamicLoaderError());
         }
+        get_affinity_cpu_info_ = LoadSymbol<GetAffinityCpuInfoFn>(
+            "dcmiv2_get_affinity_cpu_info_by_dev_id");
+        if (get_affinity_cpu_info_ == nullptr) {
+            (void)dlerror();
+        }
         Info(options, logical_device_id, "dcmi_load", "loaded " + path);
         return true;
     }
@@ -333,6 +341,32 @@ public:
                         "DCMI physical-to-logical mapping failed");
         }
         return true;
+    }
+
+    void GetAffinityCpuList(const Options &options, uint32_t logical_device_id,
+                            std::string &affinity_cpus) const
+    {
+        affinity_cpus = "unavailable";
+        if (get_affinity_cpu_info_ == nullptr) {
+            Warn(options, static_cast<int32_t>(logical_device_id), "dcmi_affinity",
+                 "dcmiv2_get_affinity_cpu_info_by_dev_id is unavailable");
+            return;
+        }
+        char buffer[kDcmiCpuListBufferSize] = {};
+        int32_t length = static_cast<int32_t>(sizeof(buffer));
+        const int32_t ret = get_affinity_cpu_info_(static_cast<int32_t>(logical_device_id), buffer, &length);
+        if (ret != 0) {
+            Warn(options, static_cast<int32_t>(logical_device_id), "dcmi_affinity",
+                 "DCMI affinity CPU query failed, ret=" + std::to_string(ret));
+            return;
+        }
+        const size_t value_length = strnlen(buffer, sizeof(buffer));
+        if (value_length == 0U) {
+            Warn(options, static_cast<int32_t>(logical_device_id), "dcmi_affinity",
+                 "DCMI affinity CPU query returned an empty cpulist");
+            return;
+        }
+        affinity_cpus.assign(buffer, value_length);
     }
 
     bool GetMainboard(const Options &options, uint32_t logical_device_id,
@@ -407,6 +441,7 @@ private:
     GetEidListFn get_eid_list_ = nullptr;
     GetMainboardFn get_mainboard_ = nullptr;
     GetLogicalFn get_logical_ = nullptr;
+    GetAffinityCpuInfoFn get_affinity_cpu_info_ = nullptr;
 };
 
 class DsmiApi {
@@ -749,6 +784,7 @@ bool Discover(const Options &options, EidPair &pair, Failure &failure)
     if (!dcmi.MapPhysicalToLogical(options, options.physical_device_id, pair.logical_device_id, failure)) {
         return false;
     }
+    dcmi.GetAffinityCpuList(options, pair.logical_device_id, pair.affinity_cpus);
     if (!ResolveTopology(options, dcmi, pair.logical_device_id, pair, failure)) {
         return false;
     }
@@ -815,6 +851,7 @@ void PrintPair(const EidPair &pair, OutputFormat format)
         std::printf("export MF_LOCAL_DRAM_LOGICAL_DEVICE_ID=%u\n", pair.logical_device_id);
         std::printf("export MF_LOCAL_DRAM_TOPOLOGY=%s\n", ShellQuote(TopologyName(pair.topology)).c_str());
         std::printf("export MF_LOCAL_DRAM_UDMA=%s\n", ShellQuote(pair.udma).c_str());
+        std::printf("export MF_LOCAL_DRAM_AFFINITY_CPUS=%s\n", ShellQuote(pair.affinity_cpus).c_str());
         std::printf("export MF_HOST_URMA_EID=%s\n", ShellQuote(pair.host_eid).c_str());
         std::printf("export USE_LOCAL_EID=%s\n", ShellQuote(pair.device_eid).c_str());
         return;
@@ -823,15 +860,19 @@ void PrintPair(const EidPair &pair, OutputFormat format)
         std::printf(
             "{\"schema\":\"mf-local-dram-eid/v1\",\"physical_device_id\":%u,"
             "\"logical_device_id\":%u,\"topology\":\"%s\",\"mesh_die_id\":%d,"
-            "\"udma\":\"%s\",\"host_eid\":\"%s\",\"device_eid\":\"%s\"}\n",
+            "\"udma\":\"%s\",\"affinity_cpus\":\"%s\",\"host_eid\":\"%s\","
+            "\"device_eid\":\"%s\"}\n",
             pair.physical_device_id, pair.logical_device_id, TopologyName(pair.topology).c_str(),
-            pair.mesh_die_id, JsonEscape(pair.udma).c_str(), JsonEscape(pair.host_eid).c_str(),
-            JsonEscape(pair.device_eid).c_str());
+            pair.mesh_die_id, JsonEscape(pair.udma).c_str(), JsonEscape(pair.affinity_cpus).c_str(),
+            JsonEscape(pair.host_eid).c_str(), JsonEscape(pair.device_eid).c_str());
         return;
     }
-    std::printf("[EID] physical=%u logical=%u topology=%s mesh_die_id=%d udma=%s host_eid=%s device_eid=%s\n",
-                pair.physical_device_id, pair.logical_device_id, TopologyName(pair.topology).c_str(),
-                pair.mesh_die_id, pair.udma.c_str(), pair.host_eid.c_str(), pair.device_eid.c_str());
+    std::printf(
+        "[EID] physical=%u logical=%u topology=%s mesh_die_id=%d udma=%s affinity_cpus=%s host_eid=%s "
+        "device_eid=%s\n",
+        pair.physical_device_id, pair.logical_device_id, TopologyName(pair.topology).c_str(),
+        pair.mesh_die_id, pair.udma.c_str(), pair.affinity_cpus.c_str(), pair.host_eid.c_str(),
+        pair.device_eid.c_str());
 }
 
 bool ParseUint32(const std::string &text, uint32_t &value)
