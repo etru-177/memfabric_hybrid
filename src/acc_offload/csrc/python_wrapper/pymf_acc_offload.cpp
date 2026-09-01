@@ -12,11 +12,13 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <thread>
 #include <vector>
 
@@ -32,6 +34,18 @@ namespace py = pybind11;
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint32_t PREFETCH_DISTANCE = 4;
+constexpr uint32_t WORKER_SPIN_COUNT = 4096;
+
+inline void CpuRelax()
+{
+#if defined(__aarch64__)
+    __asm__ __volatile__("yield" : : : "memory");
+#elif defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("pause" : : : "memory");
+#else
+    std::this_thread::yield();
+#endif
+}
 
 template <size_t Bytes>
 __attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict dst, const uint8_t *__restrict src)
@@ -84,10 +98,17 @@ struct GatherTask {
 
 void GatherPartition(const GatherTask &task, uint32_t threadIndex)
 {
-    const uint32_t begin = static_cast<uint32_t>(
-        static_cast<uint64_t>(task.request.segmentCount) * threadIndex / task.threadCount);
-    const uint32_t end = static_cast<uint32_t>(
-        static_cast<uint64_t>(task.request.segmentCount) * (threadIndex + 1U) / task.threadCount);
+    const uint32_t segmentsPerCacheLine = 64U / std::gcd(64U, task.request.segmentBytes);
+    const auto partitionBoundary = [&task, segmentsPerCacheLine](uint32_t index) {
+        if (index == task.threadCount) {
+            return task.request.segmentCount;
+        }
+        const uint32_t boundary = static_cast<uint32_t>(
+            static_cast<uint64_t>(task.request.segmentCount) * index / task.threadCount);
+        return boundary / segmentsPerCacheLine * segmentsPerCacheLine;
+    };
+    const uint32_t begin = partitionBoundary(threadIndex);
+    const uint32_t end = partitionBoundary(threadIndex + 1U);
     if (begin == end) {
         return;
     }
@@ -108,11 +129,8 @@ public:
 
     ~GatherThreadPool()
     {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        workCv_.notify_all();
+        stopping_.store(true, std::memory_order_release);
+        idleCv_.notify_all();
         for (auto &worker : workers_) {
             worker.join();
         }
@@ -125,49 +143,60 @@ public:
 
     void Run(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request)
     {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            task_ = {dst, src, request, threadCount_};
-            pendingWorkers_ = static_cast<uint32_t>(workers_.size());
-            ++generation_;
-        }
-        workCv_.notify_all();
+        task_ = {dst, src, request, threadCount_};
+        pendingWorkers_.store(static_cast<uint32_t>(workers_.size()), std::memory_order_relaxed);
+        generation_.fetch_add(1U, std::memory_order_release);
+        idleCv_.notify_all();
         GatherPartition(task_, 0);
-        std::unique_lock<std::mutex> lock(mutex_);
-        doneCv_.wait(lock, [this]() { return pendingWorkers_ == 0U; });
+        uint32_t spin = 0;
+        while (pendingWorkers_.load(std::memory_order_acquire) != 0U) {
+            CpuRelax();
+            if (++spin == WORKER_SPIN_COUNT) {
+                spin = 0;
+                std::this_thread::yield();
+            }
+        }
     }
 
 private:
+    void WaitForWork(uint64_t observedGeneration)
+    {
+        for (uint32_t spin = 0; spin < WORKER_SPIN_COUNT; ++spin) {
+            if (stopping_.load(std::memory_order_acquire) ||
+                generation_.load(std::memory_order_acquire) != observedGeneration) {
+                return;
+            }
+            CpuRelax();
+        }
+        std::unique_lock<std::mutex> lock(idleMutex_);
+        idleCv_.wait(lock, [this, observedGeneration]() {
+            return stopping_.load(std::memory_order_acquire) ||
+                generation_.load(std::memory_order_acquire) != observedGeneration;
+        });
+    }
+
     void WorkerLoop(uint32_t threadIndex)
     {
         uint64_t observedGeneration = 0;
         while (true) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            workCv_.wait(lock, [this, observedGeneration]() {
-                return stopping_ || generation_ != observedGeneration;
-            });
-            if (stopping_) {
+            WaitForWork(observedGeneration);
+            if (stopping_.load(std::memory_order_acquire)) {
                 return;
             }
-            observedGeneration = generation_;
-            lock.unlock();
+            observedGeneration = generation_.load(std::memory_order_acquire);
             GatherPartition(task_, threadIndex);
-            lock.lock();
-            if (--pendingWorkers_ == 0U) {
-                doneCv_.notify_one();
-            }
+            pendingWorkers_.fetch_sub(1U, std::memory_order_release);
         }
     }
 
     uint32_t threadCount_;
     std::vector<std::thread> workers_;
-    std::mutex mutex_;
-    std::condition_variable workCv_;
-    std::condition_variable doneCv_;
+    std::mutex idleMutex_;
+    std::condition_variable idleCv_;
     GatherTask task_{};
-    uint64_t generation_{0};
-    uint32_t pendingWorkers_{0};
-    bool stopping_{false};
+    std::atomic<uint64_t> generation_{0};
+    std::atomic<uint32_t> pendingWorkers_{0};
+    std::atomic<bool> stopping_{false};
 };
 
 GatherThreadPool &GetGatherThreadPool(uint32_t threadCount)
@@ -206,6 +235,45 @@ py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t
         gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherEnd - gatherBegin).count();
     }
     return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs);
+}
+
+py::tuple AggregateWaitDemo(uint64_t mailbox)
+{
+    auto *message = reinterpret_cast<HybmAggregateUrmaDemoMessage *>(mailbox);
+    HybmAggregateUrmaDemoRequest request{};
+    uint64_t waitNs = 0;
+    {
+        py::gil_scoped_release release;
+        const auto begin = Clock::now();
+        while (__atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE) == 0U) {}
+        const auto end = Clock::now();
+        request = message->request;
+        waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+    }
+    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, request.srcStride,
+                          request.segmentCount, request.segmentBytes, waitNs);
+}
+
+uint64_t AggregateGatherRangeDemo(uint64_t source, uint64_t aggregate, uint64_t srcStride, uint32_t segmentCount,
+                                  uint32_t segmentBytes, uint32_t gatherThreads)
+{
+    if (gatherThreads == 0U || gatherThreads > 64U) {
+        throw py::value_error("gatherThreads must be in [1, 64]");
+    }
+    auto &threadPool = GetGatherThreadPool(gatherThreads);
+    HybmAggregateUrmaDemoRequest request{};
+    request.srcStride = srcStride;
+    request.segmentCount = segmentCount;
+    request.segmentBytes = segmentBytes;
+    uint64_t gatherNs = 0;
+    {
+        py::gil_scoped_release release;
+        const auto begin = Clock::now();
+        threadPool.Run(reinterpret_cast<uint8_t *>(aggregate), reinterpret_cast<const uint8_t *>(source), request);
+        const auto end = Clock::now();
+        gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+    }
+    return gatherNs;
 }
 
 void DefineAccOffloadConfig(py::module_ &m)
@@ -248,6 +316,12 @@ void DefineAccOffloadApi(py::module_ &m)
 
     m.def("aggregate_wait_and_gather_demo", &AggregateWaitAndGatherDemo, py::arg("mailbox"), py::arg("source"),
           py::arg("aggregate"), py::arg("gatherThreads") = 1U);
+
+    m.def("aggregate_wait_demo", &AggregateWaitDemo, py::arg("mailbox"));
+
+    m.def("aggregate_gather_range_demo", &AggregateGatherRangeDemo, py::arg("source"), py::arg("aggregate"),
+          py::arg("srcStride"), py::arg("segmentCount"), py::arg("segmentBytes"),
+          py::arg("gatherThreads") = 1U);
 
     m.def("npu_kvcache_scatter_copy", &offload_kvcache_scatter_copy, py::call_guard<py::gil_scoped_release>(),
           py::arg("hbmKpe"), py::arg("hbmCkv"), py::arg("hbmBlockTable"), py::arg("dramBlockTable"),

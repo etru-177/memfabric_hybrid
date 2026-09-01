@@ -9,6 +9,7 @@ import math
 import os
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from urma_example_common import (
     DEFAULT_ENV_FILE,
@@ -143,6 +144,52 @@ def create_handle(args, bm, rank, runtime_device, pool_bytes):
     return handle
 
 
+def timed_copy(handle, bm, source, destination, size):
+    begin = time.perf_counter_ns()
+    assert handle.copy_data(source, destination, size, bm.BmCopyType.H2G, 0) == 0
+    return time.perf_counter_ns() - begin
+
+
+def run_host_pipeline_round(args, handle, bm, offload, executor, mailbox, source, aggregate):
+    result = offload.aggregate_wait_demo(mailbox)
+    dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
+    expected_total = args.segments * args.segment_bytes
+    expected_stride = 2 * args.segment_bytes
+    layout_matches = (total_bytes, src_stride, segment_count, segment_bytes) == (
+        expected_total, expected_stride, args.segments, args.segment_bytes)
+    if not layout_matches:
+        raise RuntimeError("device request layout does not match host arguments")
+    pipeline_begin = time.perf_counter_ns()
+    gather_ns = 0
+    write_ns = 0
+    write_future = None
+    for segment_begin in range(0, segment_count, args.pipeline_chunk_segments):
+        chunk_count = min(args.pipeline_chunk_segments, segment_count - segment_begin)
+        byte_offset = segment_begin * segment_bytes
+        gather_ns += offload.aggregate_gather_range_demo(
+            source + segment_begin * src_stride,
+            aggregate + byte_offset,
+            src_stride,
+            chunk_count,
+            segment_bytes,
+            args.gather_threads,
+        )
+        if write_future is not None:
+            write_ns += write_future.result()
+        write_future = executor.submit(
+            timed_copy, handle, bm, aggregate + byte_offset, dst_new_gva + byte_offset, chunk_count * segment_bytes)
+    if write_future is not None:
+        write_ns += write_future.result()
+    pipeline_ns = time.perf_counter_ns() - pipeline_begin
+    return ready_gva, total_bytes, gather_ns, write_ns, pipeline_ns
+
+
+def signal_ready(handle, bm, mailbox, ready_gva):
+    begin = time.perf_counter_ns()
+    assert handle.copy_data(mailbox + Message.doorbell.offset, ready_gva, 8, bm.BmCopyType.H2G, 0) == 0
+    return time.perf_counter_ns() - begin
+
+
 def run_host(args, handle, bm, listener, layout):
     total, stride, source_offset, aggregate_offset, _, _, _ = layout
     host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
@@ -157,28 +204,37 @@ def run_host(args, handle, bm, listener, layout):
     from _pymf_acc_offload import offload
 
     conn, _ = listener.accept()
-    stages = {"gather": [], "URMA write": [], "ready signal": [], "host total": []}
-    with conn:
+    pipelined = args.pipeline_chunk_segments > 0
+    stage_names = ("gather work", "URMA write work", "pipeline", "ready signal", "host total") if pipelined else (
+        "gather", "URMA write", "ready signal", "host total")
+    stages = {name: [] for name in stage_names}
+    if pipelined:
+        offload.aggregate_gather_range_demo(source, aggregate, stride, 0, args.segment_bytes, args.gather_threads)
+    with conn, ThreadPoolExecutor(max_workers=1, thread_name_prefix="urma-writer") as executor:
+        executor.submit(lambda: None).result()
         conn.sendall(b"R")
         for _ in range(args.rounds):
-            dst_new_gva, ready_gva, request_bytes, _, gather_ns = offload.aggregate_wait_and_gather_demo(
-                mailbox, source, aggregate, args.gather_threads)
-            write_begin = time.perf_counter_ns()
-            assert handle.copy_data(aggregate, dst_new_gva, request_bytes, bm.BmCopyType.H2G, 0) == 0
-            write_end = time.perf_counter_ns()
-            assert handle.copy_data(mailbox + Message.doorbell.offset, ready_gva, 8, bm.BmCopyType.H2G, 0) == 0
-            ready_end = time.perf_counter_ns()
+            if pipelined:
+                ready_gva, request_bytes, gather_ns, write_ns, pipeline_ns = run_host_pipeline_round(
+                    args, handle, bm, offload, executor, mailbox, source, aggregate)
+            else:
+                dst_new_gva, ready_gva, request_bytes, _, gather_ns = offload.aggregate_wait_and_gather_demo(
+                    mailbox, source, aggregate, args.gather_threads)
+                write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, request_bytes)
+                pipeline_ns = gather_ns + write_ns
+            ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
             ctypes.c_uint64.from_address(mailbox + Message.doorbell.offset).value = 0
             assert conn.recv(1) == b"D"
-            write_ns = write_end - write_begin
-            ready_ns = ready_end - write_end
-            stages["gather"].append(gather_ns)
-            stages["URMA write"].append(write_ns)
+            stages["gather work" if pipelined else "gather"].append(gather_ns)
+            stages["URMA write work" if pipelined else "URMA write"].append(write_ns)
+            if pipelined:
+                stages["pipeline"].append(pipeline_ns)
             stages["ready signal"].append(ready_ns)
-            stages["host total"].append(gather_ns + write_ns + ready_ns)
-    stage_bytes = {"gather": total, "URMA write": total, "host total": total}
+            stages["host total"].append(pipeline_ns + ready_ns)
+    stage_bytes = {name: total for name in stages if name != "ready signal"}
     print_timing_summary(
-        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
+        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, "
+        f"chunk_segments={args.pipeline_chunk_segments}, bytes/round={total}",
         stages,
         stage_bytes,
     )
@@ -235,11 +291,16 @@ def main():
     parser.add_argument("--segment-bytes", type=int, default=2048)
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--gather-threads", type=int, default=1)
+    parser.add_argument("--pipeline-chunk-segments", type=int, default=0)
     args = parser.parse_args()
     if args.segments <= 0 or args.segment_bytes <= 0 or args.rounds <= 0:
         parser.error("--segments, --segment-bytes and --rounds must be positive")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
+    if args.pipeline_chunk_segments < 0:
+        parser.error("--pipeline-chunk-segments must be non-negative")
+    if args.pipeline_chunk_segments > 0 and args.pipeline_chunk_segments * args.segment_bytes % 64 != 0:
+        parser.error("pipeline chunk byte size must be 64-byte aligned")
 
     rank = HOST_RANK if args.role == "host" else NPU_RANK
     runtime_device = configure(args.role, args.env_file)
