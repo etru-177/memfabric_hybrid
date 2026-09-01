@@ -129,7 +129,10 @@ public:
 
     ~GatherThreadPool()
     {
-        stopping_.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(idleMutex_);
+            stopping_.store(true, std::memory_order_release);
+        }
         idleCv_.notify_all();
         for (auto &worker : workers_) {
             worker.join();
@@ -143,9 +146,12 @@ public:
 
     void Run(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request)
     {
-        task_ = {dst, src, request, threadCount_};
-        pendingWorkers_.store(static_cast<uint32_t>(workers_.size()), std::memory_order_relaxed);
-        generation_.fetch_add(1U, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(idleMutex_);
+            task_ = {dst, src, request, threadCount_};
+            pendingWorkers_.store(static_cast<uint32_t>(workers_.size()), std::memory_order_relaxed);
+            generation_.fetch_add(1U, std::memory_order_release);
+        }
         idleCv_.notify_all();
         GatherPartition(task_, 0);
         uint32_t spin = 0;
