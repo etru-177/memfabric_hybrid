@@ -23,6 +23,7 @@ from urma_example_common import (
 
 
 CONTROL_BYTES = 3 * 4096
+DEFAULT_PIPELINE_BYTES = 2 * 1024 * 1024
 POOL_ALIGN = 2 << 20
 
 
@@ -54,8 +55,48 @@ class Timing(ctypes.Structure):
     ]
 
 
+CONTROL_STORAGE_BYTES = 2 * 4096 + ctypes.sizeof(Timing)
+PACKED_CONTROL_COPY_BYTES = 4096 + 64
+
+
+class HostAffinityError(ValueError):
+    pass
+
+
 def align_up(value, alignment):
     return (value + alignment - 1) // alignment * alignment
+
+
+def parse_cpu_list(value):
+    cpus = set()
+    for item in value.split(","):
+        bounds = item.strip().split("-", 1)
+        if not bounds[0]:
+            raise ValueError("empty CPU range")
+        begin = int(bounds[0])
+        end = int(bounds[-1])
+        if begin < 0 or end < begin:
+            raise ValueError(f"invalid CPU range: {item}")
+        cpus.update(range(begin, end + 1))
+    return cpus
+
+
+def configure_host_affinity(cpu_list):
+    value = cpu_list or os.environ.get("MF_LOCAL_DRAM_AFFINITY_CPUS", "")
+    if not value or value == "unavailable":
+        return
+    try:
+        cpus = parse_cpu_list(value)
+        os.sched_setaffinity(0, cpus)
+    except (OSError, ValueError) as error:
+        raise HostAffinityError(str(error)) from error
+    print(f"Host CPU affinity: {','.join(str(cpu) for cpu in sorted(cpus))}")
+
+
+def default_pipeline_chunk_segments(segment_bytes):
+    alignment = 64 // math.gcd(64, segment_bytes)
+    chunk_segments = max(1, DEFAULT_PIPELINE_BYTES // segment_bytes)
+    return max(alignment, chunk_segments // alignment * alignment)
 
 
 def summarize(values):
@@ -111,8 +152,10 @@ def load_env(path):
             os.environ[name] = value.strip().strip("'\"")
 
 
-def configure(role, env_file):
+def configure(role, env_file, host_cpu_list=None):
     load_env(env_file)
+    if role == "host":
+        configure_host_affinity(host_cpu_list)
     physical = os.environ["MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID"]
     visible = [item.strip() for item in os.environ["ASCEND_RT_VISIBLE_DEVICES"].split(",")]
     runtime_device = visible.index(physical)
@@ -150,8 +193,10 @@ def timed_copy(handle, bm, source, destination, size):
     return time.perf_counter_ns() - begin
 
 
-def run_host_pipeline_round(args, handle, bm, offload, executor, mailbox, source, aggregate):
-    result = offload.aggregate_wait_demo(mailbox)
+def run_host_round(
+    args, handle, bm, offload, executor, mailbox, source, aggregate, expected_doorbell
+):
+    result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
     expected_total = args.segments * args.segment_bytes
     expected_stride = 2 * args.segment_bytes
@@ -162,9 +207,18 @@ def run_host_pipeline_round(args, handle, bm, offload, executor, mailbox, source
     pipeline_begin = time.perf_counter_ns()
     gather_ns = 0
     write_ns = 0
+    chunk_segments = args.pipeline_chunk_segments or segment_count
+    if chunk_segments >= segment_count:
+        gather_ns = offload.aggregate_gather_range_demo(
+            source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads
+        )
+        write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
+        pipeline_ns = time.perf_counter_ns() - pipeline_begin
+        return ready_gva, total_bytes, gather_ns, write_ns, pipeline_ns
+
     write_future = None
-    for segment_begin in range(0, segment_count, args.pipeline_chunk_segments):
-        chunk_count = min(args.pipeline_chunk_segments, segment_count - segment_begin)
+    for segment_begin in range(0, segment_count, chunk_segments):
+        chunk_count = min(chunk_segments, segment_count - segment_begin)
         byte_offset = segment_begin * segment_bytes
         gather_ns += offload.aggregate_gather_range_demo(
             source + segment_begin * src_stride,
@@ -204,34 +258,26 @@ def run_host(args, handle, bm, listener, layout):
     from _pymf_acc_offload import offload
 
     conn, _ = listener.accept()
-    pipelined = args.pipeline_chunk_segments > 0
-    stage_names = ("gather work", "URMA write work", "pipeline", "ready signal", "host total") if pipelined else (
-        "gather", "URMA write", "ready signal", "host total")
+    pipelined = 0 < args.pipeline_chunk_segments < args.segments
+    stage_names = ("gather work", "URMA write work", "pipeline", "host total") if pipelined else (
+        "gather", "URMA write", "host total")
     stages = {name: [] for name in stage_names}
-    if pipelined:
-        offload.aggregate_gather_range_demo(source, aggregate, stride, 0, args.segment_bytes, args.gather_threads)
+    offload.aggregate_gather_range_demo(source, aggregate, stride, 0, args.segment_bytes, args.gather_threads)
     with conn, ThreadPoolExecutor(max_workers=1, thread_name_prefix="urma-writer") as executor:
         executor.submit(lambda: None).result()
         conn.sendall(b"R")
-        for _ in range(args.rounds):
-            if pipelined:
-                ready_gva, request_bytes, gather_ns, write_ns, pipeline_ns = run_host_pipeline_round(
-                    args, handle, bm, offload, executor, mailbox, source, aggregate)
-            else:
-                dst_new_gva, ready_gva, request_bytes, _, gather_ns = offload.aggregate_wait_and_gather_demo(
-                    mailbox, source, aggregate, args.gather_threads)
-                write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, request_bytes)
-                pipeline_ns = gather_ns + write_ns
+        for round_index in range(args.rounds):
+            expected_doorbell = round_index + 1
+            ready_gva, request_bytes, gather_ns, write_ns, pipeline_ns = run_host_round(
+                args, handle, bm, offload, executor, mailbox, source, aggregate, expected_doorbell
+            )
             ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
-            ctypes.c_uint64.from_address(mailbox + Message.doorbell.offset).value = 0
-            assert conn.recv(1) == b"D"
             stages["gather work" if pipelined else "gather"].append(gather_ns)
             stages["URMA write work" if pipelined else "URMA write"].append(write_ns)
             if pipelined:
                 stages["pipeline"].append(pipeline_ns)
-            stages["ready signal"].append(ready_ns)
             stages["host total"].append(pipeline_ns + ready_ns)
-    stage_bytes = {name: total for name in stages if name != "ready signal"}
+    stage_bytes = {name: total for name in stages}
     print_timing_summary(
         f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, "
         f"chunk_segments={args.pipeline_chunk_segments}, bytes/round={total}",
@@ -244,16 +290,31 @@ def copy_to_hbm(handle, bm, source, destination, size):
     assert handle.copy_data(source, destination, size, bm.BmCopyType.H2G, 0) == 0
 
 
+def make_device_control(request):
+    storage = (ctypes.c_uint8 * CONTROL_STORAGE_BYTES)()
+    message = Message.from_buffer(storage, 0)
+    message.request = request
+    ready = ctypes.c_uint64.from_buffer(storage, 4096)
+    timing = Timing.from_buffer(storage, 8192)
+    return storage, message, ready, timing
+
+
+def stage_device_control(handle, bm, control, hbm_gva):
+    copy_to_hbm(handle, bm, ctypes.addressof(control), hbm_gva, PACKED_CONTROL_COPY_BYTES)
+
+
 def run_npu(args, handle, bm, runtime_device, layout):
     total, stride, _, _, dst_new_offset, dst_base_offset, _ = layout
     host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
     hbm_gva = handle.peer_rank_ptr(NPU_RANK, bm.BmMemType.DEVICE)
     hbm_va = handle.gva_to_va(hbm_gva, bm.BmMemType.LOCAL_DEVICE)
-    message = Message(Request(host_gva, hbm_gva + dst_new_offset, hbm_gva + 4096, total, stride, stride,
-                              args.segments, args.segment_bytes, 0), 0)
-    zero = ctypes.c_uint64(0)
-    timing = Timing()
-    stages = {"scatter": [], "AICPU e2e": [], "launch sync": []}
+    request = Request(host_gva, hbm_gva + dst_new_offset, hbm_gva + 4096, total, stride, stride,
+                      args.segments, args.segment_bytes, 0)
+    control, message, ready, timing = make_device_control(request)
+    timing_enabled = args.device_timing_every > 0
+    stages = {"launch sync": []}
+    if timing_enabled:
+        stages.update({"scatter": [], "AICPU e2e": []})
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
@@ -263,21 +324,26 @@ def run_npu(args, handle, bm, runtime_device, layout):
         launch.restype = ctypes.c_int32
         for round_index in range(args.rounds):
             message.doorbell = round_index + 1
-            copy_to_hbm(handle, bm, ctypes.addressof(message), hbm_gva, ctypes.sizeof(message))
-            copy_to_hbm(handle, bm, ctypes.addressof(zero), hbm_gva + 4096, ctypes.sizeof(zero))
-            copy_to_hbm(handle, bm, ctypes.addressof(timing), hbm_gva + 8192, ctypes.sizeof(timing))
+            ready.value = 0
+            stage_device_control(handle, bm, control, hbm_gva)
             launch_begin = time.perf_counter_ns()
             assert launch(hbm_va, hbm_va + 4096, hbm_va + dst_new_offset, hbm_va + dst_base_offset,
                           hbm_va + 8192, runtime_device) == 0
             launch_end = time.perf_counter_ns()
-            assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
-                                    bm.BmCopyType.G2H, 0) == 0
-            stages["scatter"].append(timing.scatter_ns)
-            stages["AICPU e2e"].append(timing.total_ns)
             stages["launch sync"].append(launch_end - launch_begin)
-            conn.sendall(b"D")
-    stage_bytes = {"scatter": total, "AICPU e2e": total, "launch sync": total}
-    print_timing_summary(f"Device summary: rounds={args.rounds}, bytes/round={total}", stages, stage_bytes)
+            timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
+            if timing_due or (timing_enabled and round_index + 1 == args.rounds):
+                assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
+                                        bm.BmCopyType.G2H, 0) == 0
+                stages["scatter"].append(timing.scatter_ns)
+                stages["AICPU e2e"].append(timing.total_ns)
+    stage_bytes = {stage: total for stage in stages}
+    timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
+    print_timing_summary(
+        f"Device summary: rounds={args.rounds}, timing_samples={timing_samples}, bytes/round={total}",
+        stages,
+        stage_bytes,
+    )
 
 
 def main():
@@ -291,19 +357,30 @@ def main():
     parser.add_argument("--segment-bytes", type=int, default=2048)
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--gather-threads", type=int, default=1)
-    parser.add_argument("--pipeline-chunk-segments", type=int, default=0)
+    parser.add_argument("--pipeline-chunk-segments", type=int)
+    parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
+    parser.add_argument("--device-timing-every", type=int, default=1,
+                        help="fetch AICPU timing every N rounds; 0 disables timing G2H")
     args = parser.parse_args()
     if args.segments <= 0 or args.segment_bytes <= 0 or args.rounds <= 0:
         parser.error("--segments, --segment-bytes and --rounds must be positive")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
+    if args.pipeline_chunk_segments is None:
+        chunk_segments = default_pipeline_chunk_segments(args.segment_bytes)
+        args.pipeline_chunk_segments = chunk_segments if args.segments > chunk_segments else 0
     if args.pipeline_chunk_segments < 0:
         parser.error("--pipeline-chunk-segments must be non-negative")
     if args.pipeline_chunk_segments > 0 and args.pipeline_chunk_segments * args.segment_bytes % 64 != 0:
         parser.error("pipeline chunk byte size must be 64-byte aligned")
+    if args.device_timing_every < 0:
+        parser.error("--device-timing-every must be non-negative")
 
     rank = HOST_RANK if args.role == "host" else NPU_RANK
-    runtime_device = configure(args.role, args.env_file)
+    try:
+        runtime_device = configure(args.role, args.env_file, args.host_cpus)
+    except HostAffinityError as error:
+        parser.error(f"invalid Host CPU affinity: {error}")
     layout = make_layout(args.segments, args.segment_bytes)
     listener = None
     if rank == HOST_RANK:

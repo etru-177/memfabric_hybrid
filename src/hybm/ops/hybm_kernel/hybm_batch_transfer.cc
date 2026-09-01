@@ -29,10 +29,12 @@ __attribute__((weak)) int32_t HcommBatchTransferOnThread(ock::mf::ThreadHandle t
 namespace {
 constexpr uint32_t kMaxBatchSize = 1000;
 constexpr const char *kBatchTag = "HybmKernel";
+constexpr int32_t kHcommNotSupported = 5; // HCCL_E_NOT_SUPPORT ABI value.
 
 bool IsNotSupported(int32_t ret)
 {
-    return ret == BM_NOT_SUPPORTED || ret == BM_NOT_SUPPORT_FUNC || ret == BM_UNDER_API_UNLOAD;
+    return ret == BM_NOT_SUPPORTED || ret == BM_NOT_SUPPORT_FUNC || ret == BM_UNDER_API_UNLOAD ||
+           ret == kHcommNotSupported;
 }
 
 bool IsMarkerOnly(const HybmOneSideOpParam *param)
@@ -176,10 +178,13 @@ uint32_t TransferWithSingle(bool isRead, HybmOneSideOpParam *param)
     return BM_OK;
 }
 
-uint32_t HybmBatchTransferTask(bool isRead, HybmOneSideOpParam *param)
+uint32_t HybmBatchTransferTask(bool isRead, HybmOneSideOpParam *param, bool allowSingleFallback)
 {
     const int32_t batchRet = TransferWithBatch(isRead, param);
     if (batchRet == BM_NOT_SUPPORTED) {
+        if (!allowSingleFallback) {
+            return BM_NOT_SUPPORTED;
+        }
         return TransferWithSingle(isRead, param);
     }
     if (batchRet != BM_OK) {
@@ -188,7 +193,7 @@ uint32_t HybmBatchTransferTask(bool isRead, HybmOneSideOpParam *param)
     return BM_OK;
 }
 
-uint32_t HybmBatchTransfer(bool isRead, HybmOneSideOpParam *param)
+uint32_t HybmBatchTransfer(bool isRead, HybmOneSideOpParam *param, bool allowSingleFallback)
 {
     HYBM_LOGD("HybmBatchTransfer start, isRead=%d, ", isRead);
     uint32_t ret = CheckParam(param);
@@ -203,10 +208,10 @@ uint32_t HybmBatchTransfer(bool isRead, HybmOneSideOpParam *param)
     }
 
     if (param->list_num > 0) {
-        ret = HybmBatchTransferTask(isRead, param);
+        ret = HybmBatchTransferTask(isRead, param, allowSingleFallback);
         if (ret != BM_OK) {
             (void)BatchModeEnd(kBatchTag);
-            return BM_ERROR;
+            return ret == BM_NOT_SUPPORTED ? ret : BM_ERROR;
         }
     }
 
@@ -245,7 +250,7 @@ uint32_t HybmBatchTransfer(bool isRead, HybmOneSideOpParam *param)
 extern "C" {
 uint32_t HybmBatchWrite(HybmOneSideOpParam *param)
 {
-    const uint32_t ret = HybmBatchTransfer(false, param);
+    const uint32_t ret = HybmBatchTransfer(false, param, true);
     if (ret != BM_OK) {
         HYBM_LOGE(BM_ERROR, "HybmBatchWrite failed, ret=%u", ret);
         return BM_ERROR;
@@ -253,9 +258,23 @@ uint32_t HybmBatchWrite(HybmOneSideOpParam *param)
     return ret;
 }
 
+uint32_t HybmBatchWriteStrict(HybmOneSideOpParam *param)
+{
+    if (param != nullptr && param->list_num > kMaxBatchSize) {
+        HYBM_LOGE(BM_INVALID_PARAM, "strict batch write exceeds capacity, listNum=%u capacity=%u", param->list_num,
+                  kMaxBatchSize);
+        return BM_INVALID_PARAM;
+    }
+    const uint32_t ret = HybmBatchTransfer(false, param, false);
+    if (ret != BM_OK && ret != BM_NOT_SUPPORTED) {
+        HYBM_LOGE(BM_ERROR, "HybmBatchWriteStrict failed, ret=%u", ret);
+    }
+    return ret;
+}
+
 uint32_t HybmBatchRead(HybmOneSideOpParam *param)
 {
-    const uint32_t ret = HybmBatchTransfer(true, param);
+    const uint32_t ret = HybmBatchTransfer(true, param, true);
     if (ret != BM_OK) {
         HYBM_LOGE(BM_ERROR, "HybmBatchRead failed, ret=%u", ret);
         return BM_ERROR;

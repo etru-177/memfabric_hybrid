@@ -6,6 +6,7 @@
 #include "hybm_aggregate_urma_demo.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 
 #include "hybm_batch_copy_route.h"
@@ -64,19 +65,22 @@ const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRou
     return nullptr;
 }
 
-uint32_t WriteRemote(const ock::mf::BatchCopyPeerEntry &peer, uint64_t remote, const void *local, uint64_t bytes)
+uint32_t WriteRemoteRequestAndDoorbell(const ock::mf::BatchCopyPeerEntry &peer, uint64_t remote,
+                                       const HybmAggregateUrmaDemoMessage &message)
 {
-    void *destinations[] = {reinterpret_cast<void *>(remote)};
-    void *sources[] = {const_cast<void *>(local)};
-    uint64_t lengths[] = {bytes};
+    void *destinations[] = {reinterpret_cast<void *>(remote),
+                            reinterpret_cast<void *>(remote + offsetof(HybmAggregateUrmaDemoMessage, doorbell))};
+    void *sources[] = {const_cast<HybmAggregateUrmaDemoRequest *>(&message.request),
+                       const_cast<uint64_t *>(&message.doorbell)};
+    uint64_t lengths[] = {sizeof(message.request), sizeof(message.doorbell)};
     HybmOneSideOpParam write{};
     write.thread = peer.thread;
     write.channel = peer.channel;
-    write.list_num = 1;
+    write.list_num = 2U;
     write.dst_buf_addr_list = destinations;
     write.src_buf_addr_list = sources;
     write.len_list = lengths;
-    return HybmBatchWrite(&write);
+    return HybmBatchWriteStrict(&write);
 }
 
 void WaitForHost(const HybmAggregateUrmaDemoParam &param)
@@ -86,14 +90,44 @@ void WaitForHost(const HybmAggregateUrmaDemoParam &param)
     } while (*param.ready != param.message->doorbell);
 }
 
-void Scatter(const HybmAggregateUrmaDemoParam &param)
+template <size_t Bytes>
+__attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict destination,
+                                                     const uint8_t *__restrict source)
 {
-    const auto &request = param.message->request;
-    InvalidateDeviceCacheRange(reinterpret_cast<uintptr_t>(param.dstNew), request.totalBytes);
+    __builtin_memcpy(destination, source, Bytes);
+}
+
+template <size_t Bytes>
+void ScatterFixed(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
+{
+    for (uint32_t index = 0; index < request.segmentCount; ++index) {
+        auto *destination = param.dstBase + index * request.dstStride;
+        CopyFixed<Bytes>(destination, param.dstNew + index * Bytes);
+        FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), Bytes);
+    }
+}
+
+void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
+{
     for (uint32_t index = 0; index < request.segmentCount; ++index) {
         auto *destination = param.dstBase + index * request.dstStride;
         std::memcpy(destination, param.dstNew + index * request.segmentBytes, request.segmentBytes);
         FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), request.segmentBytes);
+    }
+}
+
+void Scatter(const HybmAggregateUrmaDemoParam &param)
+{
+    const auto &request = param.message->request;
+    InvalidateDeviceCacheRange(reinterpret_cast<uintptr_t>(param.dstNew), request.totalBytes);
+    if (request.segmentBytes == 656U) {
+        ScatterFixed<656>(param, request);
+    } else if (request.segmentBytes == 576U) {
+        ScatterFixed<576>(param, request);
+    } else if (request.segmentBytes == 1152U) {
+        ScatterFixed<1152>(param, request);
+    } else {
+        ScatterDynamic(param, request);
     }
     __asm__ __volatile__("dsb ish" : : : "memory");
 }
@@ -113,13 +147,9 @@ extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
     const auto &peer = route->peers[range->peerIndex];
     InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&peer));
     const uint64_t remote = range->hcommVaBegin + param->message->request.hostMailboxGva - range->srcGvaBegin;
-    auto ret = WriteRemote(peer, remote, &param->message->request, sizeof(param->message->request));
-    if (ret == BM_OK) {
-        ret = WriteRemote(peer, remote + offsetof(HybmAggregateUrmaDemoMessage, doorbell), &param->message->doorbell,
-                          sizeof(param->message->doorbell));
-    }
+    const auto ret = WriteRemoteRequestAndDoorbell(peer, remote, *param->message);
     if (ret != BM_OK) {
-        HYBM_LOGE(ret, "aggregate demo request write failed, ret=%u", ret);
+        HYBM_LOGE(ret, "aggregate demo request and doorbell write failed, ret=%u", ret);
         return ret;
     }
     const auto requested = Clock::now();

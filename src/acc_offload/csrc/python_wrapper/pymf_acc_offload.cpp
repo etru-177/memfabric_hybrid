@@ -215,35 +215,20 @@ GatherThreadPool &GetGatherThreadPool(uint32_t threadCount)
     }
     return *pool;
 }
+
+void WaitForDoorbell(const HybmAggregateUrmaDemoMessage *message, uint64_t expectedDoorbell)
+{
+    while (true) {
+        const uint64_t doorbell = __atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE);
+        if (doorbell == expectedDoorbell) {
+            return;
+        }
+        CpuRelax();
+    }
+}
 } // namespace
 
-py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t aggregate, uint32_t gatherThreads)
-{
-    if (gatherThreads == 0U || gatherThreads > 64U) {
-        throw py::value_error("gatherThreads must be in [1, 64]");
-    }
-    auto &threadPool = GetGatherThreadPool(gatherThreads);
-    auto *message = reinterpret_cast<HybmAggregateUrmaDemoMessage *>(mailbox);
-    HybmAggregateUrmaDemoRequest request{};
-    uint64_t waitNs = 0;
-    uint64_t gatherNs = 0;
-    {
-        py::gil_scoped_release release;
-        const auto waitBegin = Clock::now();
-        while (__atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE) == 0U) {}
-        const auto gatherBegin = Clock::now();
-        request = message->request;
-        auto *src = reinterpret_cast<const uint8_t *>(source);
-        auto *dst = reinterpret_cast<uint8_t *>(aggregate);
-        threadPool.Run(dst, src, request);
-        const auto gatherEnd = Clock::now();
-        waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherBegin - waitBegin).count();
-        gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherEnd - gatherBegin).count();
-    }
-    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs);
-}
-
-py::tuple AggregateWaitDemo(uint64_t mailbox)
+py::tuple AggregateWaitDemo(uint64_t mailbox, uint64_t expectedDoorbell)
 {
     auto *message = reinterpret_cast<HybmAggregateUrmaDemoMessage *>(mailbox);
     HybmAggregateUrmaDemoRequest request{};
@@ -251,7 +236,7 @@ py::tuple AggregateWaitDemo(uint64_t mailbox)
     {
         py::gil_scoped_release release;
         const auto begin = Clock::now();
-        while (__atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE) == 0U) {}
+        WaitForDoorbell(message, expectedDoorbell);
         const auto end = Clock::now();
         request = message->request;
         waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
@@ -320,10 +305,7 @@ void DefineAccOffloadApi(py::module_ &m)
     m.def("sparse_copy_urma", &offload_sparse_copy_urma, py::call_guard<py::gil_scoped_release>(), py::arg("srcPtrs"),
           py::arg("dstPtrs"), py::arg("lenPtrs"), py::arg("listNum"), py::arg("deviceId"));
 
-    m.def("aggregate_wait_and_gather_demo", &AggregateWaitAndGatherDemo, py::arg("mailbox"), py::arg("source"),
-          py::arg("aggregate"), py::arg("gatherThreads") = 1U);
-
-    m.def("aggregate_wait_demo", &AggregateWaitDemo, py::arg("mailbox"));
+    m.def("aggregate_wait_demo", &AggregateWaitDemo, py::arg("mailbox"), py::arg("expectedDoorbell"));
 
     m.def("aggregate_gather_range_demo", &AggregateGatherRangeDemo, py::arg("source"), py::arg("aggregate"),
           py::arg("srcStride"), py::arg("segmentCount"), py::arg("segmentBytes"),

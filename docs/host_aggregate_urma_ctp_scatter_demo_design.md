@@ -30,11 +30,11 @@
 最终路径为：
 
 ```text
-AICPU 写 Host request
+AICPU 一次 batch 写 Host request + generation doorbell
   -> Host CPU 观察 doorbell
-  -> Host CPU gather
-  -> Host 一次大包 copy_data(H2G) 到 dst_new
-  -> Host 写 NPU ready
+  -> Host CPU 分块 gather
+  -> 单 writer 将上一块同步 copy_data(H2G) 到 dst_new
+  -> Host 写同一 generation 到 NPU ready
   -> AICPU scatter
 ```
 
@@ -48,7 +48,7 @@ AICPU 写 Host request
 固定条件：
 
 - rank 0 是 Host DRAM，rank 1 是 NPU HBM。
-- 一次只运行一个请求，doorbell 和 ready 固定为 `1`。
+- 一次只运行一个请求；第 N 轮 doorbell 和 ready 使用 generation `N + 1`。
 - 所有段等长；默认 `4096 × 2048 B = 8 MiB`。
 - Host 源和 NPU 目的均使用 `2 × segmentBytes` stride，体现离散 gather/scatter。
 - Host/NPU pool 在 `join()` 时一次分配和注册。
@@ -59,42 +59,44 @@ AICPU 写 Host request
 ### 3.1 AICPU → Host 请求
 
 新增 AICPU 测试算子 `HybmAggregateUrmaDemo`，但不新增 HCOMM API。它从现有
-`BatchCopyRouteTable` 取得 AICPU thread、channel 和 Host MR imported view，然后两次调用
-`HybmBatchWrite`：
+`BatchCopyRouteTable` 取得 AICPU thread、channel 和 Host MR imported view，然后一次调用
+`HybmBatchWriteStrict`，其中包含两个有序 descriptor：
 
-1. 提交 64 B request body，调用末尾设置 Fence；
-2. 提交 8 B doorbell；该 Write 消费上一步 Fence，调用末尾再设置下一次 Fence。
+1. 64 B request body；
+2. 8 B generation doorbell。
 
 实现见
 [`hybm_aggregate_urma_demo.cc`](../src/acc_offload/csrc/operators/aicpu/hybm_aggregate_urma_demo.cc#L55-L135)。
-`HybmBatchWrite` 复用现有 batch/single 提交和 `HcommChannelFenceOnThread`：
+`HybmBatchWriteStrict` 复用现有 batch 提交和 `HcommChannelFenceOnThread`：
 [`hybm_batch_transfer.cc`](../src/hybm/ops/hybm_kernel/hybm_batch_transfer.cc#L191-L253)。
 
-A5 AICPU 的 `HcommChannelFenceOnThread` 不等待 CQ；它只让下一次操作带 fence、strong order 和 completion
-order：`C:/code/cann/hcomm/src/legacy/ascend950/unified_platform/resource/transport/aicpu/`
-`ub_transport_lite_impl.cc:1041-1055`。因此第一次调用后的 Fence 用来保证 request body 先于下一次 doorbell
-写可见；第二次调用返回仍只是提交/排序点，不是远端完成。Host 观察到 doorbell 才表示请求已到达。
+A5 的 batch transfer 将最后一个 descriptor（doorbell）设置为 strong placement order 和 completion order，
+因此 request body 先于 doorbell 对 Host 可见。调用返回仍只是提交/排序点，不是远端完成；Host 观察到
+当前 generation 的 doorbell 才表示本轮请求已到达。该 Demo 要求 `HcommBatchTransferOnThread` 可用，
+不再保留两次单写的兼容路径；不支持 batch 时直接返回错误。
 
 ### 3.2 Host gather
 
 Host 使用 Python 扩展中的一个 Demo-only C++ helper：
 
 ```cpp
-aggregate_wait_and_gather_demo(mailbox, source, aggregate)
+aggregate_wait_demo(mailbox, expectedDoorbell)
+aggregate_gather_range_demo(source, aggregate, srcStride, segmentCount, segmentBytes, gatherThreads)
 ```
 
-它 busy-poll doorbell，随后按 request 中的 `segmentCount`、`segmentBytes` 和 `srcStride` 循环
-`memcpy` 到连续 `host_agg`。实现见
+前者 busy-poll 当前 generation 的 doorbell；后者按 request 中的 `segmentCount`、`segmentBytes` 和
+`srcStride` 循环 memcpy 到连续 `host_agg`。默认约 2 MiB/块，并由一个 writer 线程同步写上一块，
+从而与主线程 gather 下一块重叠。实现见
 [`pymf_acc_offload.cpp`](../src/acc_offload/csrc/python_wrapper/pymf_acc_offload.cpp#L27-L54)。
 
 这样 gather 数据不包含 Python 逐段循环开销。
 
 ### 3.3 Host → NPU 数据和 ready
 
-Host 连续调用两次同步 `BigMemory.copy_data(..., H2G)`：
+Host 使用同步 `BigMemory.copy_data(..., H2G)`：
 
-1. `host_agg -> dst_new`，长度为 `totalBytes`；
-2. Host mailbox 中值为 `1` 的 doorbell -> NPU ready，长度为 8 B。
+1. 每个流水块执行 `host_agg + offset -> dst_new + offset`；显式关闭流水时一次写 `totalBytes`；
+2. 所有块完成后，将 Host mailbox 中的 generation 写入 NPU ready，长度为 8 B。
 
 Demo 调用位置见
 [`03_aicpu_host_aggregate_urma.py`](../examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py#L115-L143)。
@@ -106,7 +108,7 @@ Host UBC_CTP Fence 会轮询 JFC，直到本批 WQE 完成：
 所以顺序是：
 
 ```text
-dst_new 写完成并 Fence 返回
+最后一个 dst_new 块写完成并 Fence 返回
   < ready 写提交
   < ready Fence 返回
   < AICPU 观察到 ready
@@ -116,7 +118,7 @@ dst_new 写完成并 Fence 返回
 
 ### 3.4 AICPU local scatter
 
-AICPU 对 ready cache line 执行 cache invalidate 并 busy-poll。观察到 `1` 后执行：
+AICPU 对 ready cache line 执行 cache invalidate 并 busy-poll。观察到当前 generation 后执行：
 
 ```cpp
 invalidate_cache(dstNew, totalBytes);
@@ -132,18 +134,19 @@ dsb();
 实现见
 [`hybm_aggregate_urma_demo.cc`](../src/acc_offload/csrc/operators/aicpu/hybm_aggregate_urma_demo.cc#L89-L99)。
 输入 cache invalidate、输出 cache clean 和 `dsb` 均计入 `scatterNs`，避免读到旧数据或只测到 AICPU
-cache 写入。该实现仍是单 AICPU 核测试，不代表最终 scatter 带宽上限。
+cache 写入。656 B、576 B 和 1152 B 使用编译期定长 copy，其他尺寸保留动态 `memcpy`。该实现仍是
+单 AICPU 核测试，不代表最终 scatter 带宽上限。
 
 ## 4. 架构与时序
 
 ```mermaid
 flowchart LR
-    A["AICPU demo kernel"] -->|"HybmBatchWrite request + doorbell"| U["HCOMM / UB URMA_CTP"]
+    A["AICPU demo kernel"] -->|"HybmBatchWriteStrict request + doorbell"| U["HCOMM / UB URMA_CTP"]
     U --> M["Host registered mailbox"]
     M --> C["Host CPU busy-poll + gather"]
     S["Host sparse src"] --> C
     C --> G["Host registered host_agg"]
-    G -->|"one large copy_data(H2G)"| U
+    G -->|"chunked copy_data(H2G)"| U
     U --> N["NPU HBM dst_new"]
     C -->|"8 B ready write"| U
     N --> A
@@ -159,17 +162,16 @@ sequenceDiagram
     participant NH as NPU HBM ready/dst_new/dst
 
     Note over AI,HC: TCP READY 仅为计时前屏障
-    AI->>HU: submit request body; arm Fence for next op
-    AI->>HU: submit doorbell=1 fenced behind body
+    AI->>HU: one batch: request body + ordered generation doorbell
     HU->>HM: request body becomes visible
     HU->>HM: ordered doorbell becomes visible
     HC->>HM: busy-poll doorbell
-    HC->>HM: gather sparse src -> host_agg
-    HC->>HU: copy_data(host_agg, dst_new, totalBytes, H2G)
-    HU->>NH: large Write
-    HU-->>HC: Host Fence returns after CQ completion
-    HC->>HU: copy_data(1, ready, 8, H2G)
-    HU->>NH: ready=1
+    HC->>HM: chunked gather sparse src -> host_agg
+    HC->>HU: writer copy_data(previous chunk, dst_new, H2G)
+    HU->>NH: chunk Write
+    HU-->>HC: per-chunk Host Fence returns after CQ completion
+    HC->>HU: copy_data(generation, ready, 8, H2G)
+    HU->>NH: ready=generation
     HU-->>HC: Host Fence returns after CQ completion
     AI->>NH: invalidate + poll ready
     AI->>NH: invalidate + memcpy + cache clean dst_new -> strided dst
@@ -228,32 +230,33 @@ struct alignas(64) HybmAggregateUrmaDemoMessage {
 };
 ```
 
-没有 requestId、generation ring、状态、错误码或 checksum；固定 doorbell/ready 值为 `1`。
+没有 request ring、状态、错误码或 checksum；单槽 mailbox 通过逐轮递增的 generation 防止重复消费旧通知。
 
 ## 7. 调用与完成语义
 
 | 顺序 | 执行实体 | 调用 | 本 Demo 中的含义 |
 | ---: | --- | --- | --- |
 | 1 | NPU Host launcher | `AccOffloadAggregateUrmaDemo(...)` | 启动并同步等待 AICPU kernel |
-| 2 | AICPU | `HybmBatchWrite(request body)` | 提交 body；随后的 Fence 约束下一次操作 |
-| 3 | AICPU | `HybmBatchWrite(doorbell)` | 提交有序 doorbell；返回不是远端完成 |
-| 4 | Host CPU | `aggregate_wait_and_gather_demo(...)` | busy-poll 并执行 C++ gather |
-| 5 | Host CPU | `copy_data(host_agg, dstNewGva, totalBytes, H2G, 0)` | 大包写；同步返回包含 Host Channel Fence |
+| 2 | AICPU | `HybmBatchWriteStrict(request body + doorbell)` | 一次 batch 提交有序控制消息；返回不是远端完成 |
+| 3 | Host CPU | `aggregate_wait_demo(...)` | busy-poll 当前 generation |
+| 4 | Host CPU | `aggregate_gather_range_demo(...)` | C++ 分块 gather，并与单 writer 重叠 |
+| 5 | Host CPU | `copy_data(host_agg + offset, dstNewGva + offset, chunkBytes, H2G, 0)` | 每块同步返回包含 Host Channel Fence |
 | 6 | Host CPU | `copy_data(doorbell, readyGva, 8, H2G, 0)` | 数据写完成后发布 ready；同步返回包含 Fence |
 | 7 | AICPU | invalidate + poll `ready` | ready 可见后才进入 scatter |
 | 8 | AICPU | invalidate + `memcpy` + cache clean | 读取 Host 新写数据，并使 scatter 结果离开 AICPU cache |
 | 9 | NPU Host launcher | `aclrtSynchronizeStream` | AICPU 请求、等待和 scatter 全部结束 |
 
-“一次大包”指一次 MemFabric `copy_data` 和一次 Host `HcommWriteOnThread` 调用。HCOMM 仍可能按
-`maxWriteSize` 把大包拆成多个物理 URMA WR；实现位于
+默认块大小约 2 MiB；可通过 `--pipeline-chunk-segments 0` 让统一实现按整轮单块执行，或显式指定块内
+segment 数；这里没有旧 gather helper 的回退分支。
+HCOMM 仍可能按 `maxWriteSize` 把每块拆成多个物理 URMA WR；实现位于
 `C:/code/cann/hcomm/src/base_comm/resources/endpoint_pairs/channels/host/host_cpu_urma_channel.cc:253-340`。
 
 ## 8. 时延口径
 
 AICPU 使用同一个 `steady_clock` 记录：
 
-- `requestNs`：route 查找、两次控制 Write 提交和两次 Fence 设置；不表示 doorbell 已在 Host 可见；
-- `waitHostNs`：第二次提交返回到 ready 可见；Host 可能已并行处理，因此这里只是 Host 路径的剩余时延；
+- `requestNs`：route 查找、一次双 descriptor 控制 batch 和 Fence 设置；不表示 doorbell 已在 Host 可见；
+- `waitHostNs`：控制 batch 返回到 ready 可见；Host 可能已并行处理，因此这里只是 Host 路径的剩余时延；
 - `scatterNs`：`dst_new` cache invalidate、AICPU local scatter、目的 cache clean 和 `dsb`；
 - `totalNs`：`requestNs + waitHostNs + scatterNs`。
 
@@ -309,7 +312,7 @@ Demo 不检查两端参数是否一致；不一致时直接视为无效测试。
 实现拆为五个可审阅阶段：
 
 1. 补齐 Host/Device UBC_CTP import view，使 Host 可以写 `dst_new/ready`。
-2. 新增最小 AICPU request/wait/scatter kernel、独立构建入口，并复用 `HybmBatchWrite`。
+2. 新增最小 AICPU request/wait/scatter kernel、独立构建入口，并使用 `HybmBatchWriteStrict`。
 3. 在 `sparse_copy_urma` 下新增单请求 Demo 和运行说明。
 4. 去掉 Demo kernel 的显式 runtime timeout，保持纯 happy path。
 5. 用本文替换原生产化方案，删除可靠性、校验和并发设计。

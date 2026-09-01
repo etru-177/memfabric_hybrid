@@ -23,6 +23,8 @@ struct HybmOneSideOpParam {
 
 extern "C" {
 uint32_t HybmBatchWrite(HybmOneSideOpParam *param);
+// Requires one native HCOMM batch (list_num <= 1000) and does not use the single-write fallback.
+uint32_t HybmBatchWriteStrict(HybmOneSideOpParam *param);
 uint32_t HybmBatchRead(HybmOneSideOpParam *param);
 }
 
