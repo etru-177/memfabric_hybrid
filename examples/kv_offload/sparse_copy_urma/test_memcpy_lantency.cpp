@@ -20,6 +20,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <string>
 #include <thread>
 #include <utility>
@@ -46,6 +47,8 @@ struct BenchmarkResult {
 struct CopyBuffers {
     std::vector<uint8_t> source;
     std::vector<uint8_t> destination;
+    std::vector<size_t> sourceOffsets;
+    std::vector<size_t> destinationOffsets;
 };
 
 template <size_t Bytes>
@@ -99,9 +102,9 @@ void CompilerBarrier(const void *memory)
 #endif
 }
 
-size_t BufferOffset(uint64_t round, size_t bytes, bool streaming)
+size_t AlignUp(size_t value, size_t alignment)
 {
-    return streaming ? static_cast<size_t>(round) * bytes : 0U;
+    return (value + alignment - 1U) / alignment * alignment;
 }
 
 template <typename Work>
@@ -131,34 +134,46 @@ double RunWorkers(uint32_t threadCount, const Work &work)
     return std::chrono::duration<double, std::nano>(Clock::now() - begin).count();
 }
 
-std::vector<CopyBuffers> MakeBuffers(uint32_t threadCount, uint64_t rounds, size_t bytes, bool streaming)
+std::vector<size_t> MakeRandomOffsets(size_t copies, size_t stride, uint64_t seed)
 {
-    const size_t copies = streaming ? static_cast<size_t>(rounds) : 1U;
-    const size_t sourceMultiplier = streaming ? 2U : 1U;
+    std::vector<size_t> offsets(copies);
+    std::iota(offsets.begin(), offsets.end(), 0U);
+    std::mt19937_64 generator(seed);
+    std::shuffle(offsets.begin(), offsets.end(), generator);
+    for (auto &offset : offsets) {
+        offset *= stride;
+    }
+    return offsets;
+}
+
+std::vector<CopyBuffers> MakeBuffers(uint32_t threadCount, uint64_t rounds, size_t bytes)
+{
+    constexpr size_t cacheLineBytes = 64U;
+    const size_t copies = static_cast<size_t>(rounds);
+    const size_t stride = AlignUp(bytes, cacheLineBytes) + cacheLineBytes;
     std::vector<CopyBuffers> buffers;
     buffers.reserve(threadCount);
     for (uint32_t thread = 0U; thread < threadCount; ++thread) {
-        buffers.push_back({std::vector<uint8_t>(copies * bytes * sourceMultiplier, 0x5A),
-                           std::vector<uint8_t>(copies * bytes, 0)});
+        const uint64_t seed = 0x9E3779B97F4A7C15ULL * (static_cast<uint64_t>(thread) + 1U);
+        buffers.push_back({std::vector<uint8_t>(copies * stride, 0x5A),
+                           std::vector<uint8_t>(copies * stride, 0),
+                           MakeRandomOffsets(copies, stride, seed),
+                           MakeRandomOffsets(copies, stride, seed ^ 0xD1B54A32D192ED03ULL)});
     }
     return buffers;
 }
 
 template <typename Copier>
-BenchmarkResult MeasureMemcpy(
-    uint64_t rounds, size_t bytes, uint32_t threadCount, bool streaming, const Copier &copy)
+BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, uint32_t threadCount, const Copier &copy)
 {
     constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
     constexpr double nanosecondsPerSecond = 1e9;
-    auto buffers = MakeBuffers(threadCount, rounds, bytes, streaming);
+    auto buffers = MakeBuffers(threadCount, rounds, bytes);
     const auto throughputWork = [&](uint32_t thread) {
         auto &buffer = buffers[thread];
         for (uint64_t round = 0; round < rounds; ++round) {
-            const size_t dstOffset = BufferOffset(round, bytes, streaming);
-            const size_t srcOffset = streaming ? dstOffset * 2U : 0U;
-            if (streaming && rounds - round > 4U) {
-                __builtin_prefetch(buffer.source.data() + (static_cast<size_t>(round) + 4U) * bytes * 2U, 0, 1);
-            }
+            const size_t srcOffset = buffer.sourceOffsets[round];
+            const size_t dstOffset = buffer.destinationOffsets[round];
             copy(buffer.destination.data() + dstOffset, buffer.source.data() + srcOffset);
             CompilerBarrier(buffer.destination.data() + dstOffset);
         }
@@ -171,11 +186,8 @@ BenchmarkResult MeasureMemcpy(
         auto &latencies = threadLatencies[thread];
         latencies.reserve(static_cast<size_t>(rounds));
         for (uint64_t round = 0; round < rounds; ++round) {
-            const size_t dstOffset = BufferOffset(round, bytes, streaming);
-            const size_t srcOffset = streaming ? dstOffset * 2U : 0U;
-            if (streaming && rounds - round > 4U) {
-                __builtin_prefetch(buffer.source.data() + (static_cast<size_t>(round) + 4U) * bytes * 2U, 0, 1);
-            }
+            const size_t srcOffset = buffer.sourceOffsets[round];
+            const size_t dstOffset = buffer.destinationOffsets[round];
             const auto begin = Clock::now();
             copy(buffer.destination.data() + dstOffset, buffer.source.data() + srcOffset);
             const auto end = Clock::now();
@@ -195,22 +207,20 @@ BenchmarkResult MeasureMemcpy(
     const double wallNsPerCopy = elapsedNs / static_cast<double>(totalCopies);
     const double bandwidth =
         static_cast<double>(totalCopies) * bytes * nanosecondsPerSecond / elapsedNs / bytesPerGiB;
-    return {streaming ? "strided" : "hot", CalculateStats(std::move(latencies)), wallNsPerCopy, bandwidth};
+    return {"random", CalculateStats(std::move(latencies)), wallNsPerCopy, bandwidth};
 }
 
-std::vector<BenchmarkResult> RunBenchmarks(uint64_t rounds, size_t bytes, uint32_t threadCount)
+BenchmarkResult RunBenchmark(uint64_t rounds, size_t bytes, uint32_t threadCount)
 {
     if (bytes == 656U) {
         const FixedCopier<656> copy{};
-        return {MeasureMemcpy(rounds, bytes, threadCount, false, copy),
-                MeasureMemcpy(rounds, bytes, threadCount, true, copy)};
+        return MeasureMemcpy(rounds, bytes, threadCount, copy);
     }
     const DynamicCopier copy{bytes};
-    return {MeasureMemcpy(rounds, bytes, threadCount, false, copy),
-            MeasureMemcpy(rounds, bytes, threadCount, true, copy)};
+    return MeasureMemcpy(rounds, bytes, threadCount, copy);
 }
 
-void PrintStats(uint64_t rounds, size_t bytes, uint32_t threadCount, const std::vector<BenchmarkResult> &results)
+void PrintStats(uint64_t rounds, size_t bytes, uint32_t threadCount, const BenchmarkResult &result)
 {
     constexpr int columnWidth = 14;
     constexpr int columnCount = 10;
@@ -231,16 +241,14 @@ void PrintStats(uint64_t rounds, size_t bytes, uint32_t threadCount, const std::
               << std::setw(columnWidth) << "P99(ns) " << '|' << std::setw(columnWidth) << "wall(ns/copy) " << '|'
               << std::setw(columnWidth) << "GiB/s " << "|\n";
     printSeparator();
-    for (const auto &result : results) {
-        const auto &stats = result.latency;
-        std::cout << '|' << std::setw(columnWidth) << result.mode << '|' << std::setw(columnWidth)
-                  << rounds * threadCount << '|'
-                  << std::setw(columnWidth) << bytes << '|' << std::fixed << std::setprecision(1)
-                  << std::setw(columnWidth) << stats.averageNs << '|' << std::setw(columnWidth) << stats.minNs << '|'
-                  << std::setw(columnWidth) << stats.maxNs << '|' << std::setw(columnWidth) << stats.p95Ns << '|'
-                  << std::setw(columnWidth) << stats.p99Ns << '|' << std::setw(columnWidth) << result.wallNsPerCopy
-                  << '|' << std::setprecision(2) << std::setw(columnWidth) << result.bandwidthGiBs << "|\n";
-    }
+    const auto &stats = result.latency;
+    std::cout << '|' << std::setw(columnWidth) << result.mode << '|' << std::setw(columnWidth)
+              << rounds * threadCount << '|' << std::setw(columnWidth) << bytes << '|' << std::fixed
+              << std::setprecision(1) << std::setw(columnWidth) << stats.averageNs << '|' << std::setw(columnWidth)
+              << stats.minNs << '|' << std::setw(columnWidth) << stats.maxNs << '|' << std::setw(columnWidth)
+              << stats.p95Ns << '|' << std::setw(columnWidth) << stats.p99Ns << '|' << std::setw(columnWidth)
+              << result.wallNsPerCopy << '|' << std::setprecision(2) << std::setw(columnWidth)
+              << result.bandwidthGiBs << "|\n";
     printSeparator();
 }
 } // namespace
@@ -259,14 +267,16 @@ int main(int argc, char **argv)
     }
 
     const size_t copyBytes = static_cast<size_t>(bytes);
-    if (rounds > std::numeric_limits<size_t>::max() / copyBytes / 2U ||
+    constexpr size_t cacheLineBytes = 64U;
+    if (copyBytes > std::numeric_limits<size_t>::max() - 2U * cacheLineBytes ||
+        rounds > std::numeric_limits<size_t>::max() / (AlignUp(copyBytes, cacheLineBytes) + cacheLineBytes) ||
         rounds > std::numeric_limits<uint64_t>::max() / threads) {
         std::cerr << "Buffer size overflow: rounds=" << rounds << ", bytes=" << bytes << ", threads=" << threads
                   << '\n';
         return 1;
     }
     const auto threadCount = static_cast<uint32_t>(threads);
-    const auto results = RunBenchmarks(rounds, copyBytes, threadCount);
-    PrintStats(rounds, copyBytes, threadCount, results);
+    const auto result = RunBenchmark(rounds, copyBytes, threadCount);
+    PrintStats(rounds, copyBytes, threadCount, result);
     return 0;
 }
