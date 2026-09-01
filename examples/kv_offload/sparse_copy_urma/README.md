@@ -167,3 +167,16 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
 
 Host 输出 gather、URMA write、流水总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
 该程序没有数据校验、超时、重试或异常清理，只用于上板穿刺。
+
+### memcpy microbenchmark
+
+`test_memcpy_lantency.cpp` 可对比 656 B 固定展开路径及其他尺寸的普通 `memcpy`，并支持多线程并发：
+
+```bash
+g++ -O2 -std=c++14 -pthread test_memcpy_lantency.cpp -o test_memcpy_lantency
+./test_memcpy_lantency 100000 656       # 单线程
+./test_memcpy_lantency 100000 656 8     # 8 线程，每线程 100000 次
+```
+
+每个线程使用独立的源和目的缓冲区。`average/min/max/P95/P99` 是所有线程逐次调用的实测时延；
+`wall(ns/copy)` 是并发墙钟时间除以总 copy 数，配合聚合 `GiB/s` 判断并发带来的吞吐收益。
