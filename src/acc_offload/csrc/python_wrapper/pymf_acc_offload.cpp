@@ -12,10 +12,12 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
-#include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
-#include <utility>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include <pybind11/pybind11.h>
@@ -28,15 +30,6 @@
 namespace py = pybind11;
 
 namespace {
-struct MemcpyLatencyStats {
-    uint64_t count{0};
-    double averageNs{0.0};
-    uint64_t p95Ns{0};
-    uint64_t p99Ns{0};
-    uint64_t minNs{0};
-    uint64_t maxNs{0};
-};
-
 using Clock = std::chrono::steady_clock;
 constexpr uint32_t PREFETCH_DISTANCE = 4;
 
@@ -47,96 +40,172 @@ __attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict dst, co
 }
 
 template <size_t Bytes>
-void GatherFixed(uint8_t *__restrict dst, const uint8_t *__restrict src, uint64_t srcStride, uint32_t segmentCount,
-    std::vector<uint64_t> &latencies)
+void GatherFixed(uint8_t *__restrict dst, const uint8_t *__restrict src, uint64_t srcStride, uint32_t segmentCount)
 {
     for (uint32_t index = 0; index < segmentCount; ++index) {
         if (segmentCount - index > PREFETCH_DISTANCE) {
             __builtin_prefetch(src + PREFETCH_DISTANCE * srcStride, 0, 1);
         }
-        const auto copyBegin = Clock::now();
         CopyFixed<Bytes>(dst, src);
-        const auto copyEnd = Clock::now();
-        latencies.emplace_back(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - copyBegin).count());
         dst += Bytes;
         src += srcStride;
     }
 }
 
 void GatherDynamic(uint8_t *__restrict dst, const uint8_t *__restrict src, uint64_t srcStride, uint32_t segmentCount,
-                   uint32_t segmentBytes, std::vector<uint64_t> &latencies)
+                   uint32_t segmentBytes)
 {
     for (uint32_t index = 0; index < segmentCount; ++index) {
-        const auto copyBegin = Clock::now();
         std::memcpy(dst, src, segmentBytes);
-        const auto copyEnd = Clock::now();
-        latencies.emplace_back(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(copyEnd - copyBegin).count());
         dst += segmentBytes;
         src += srcStride;
     }
 }
 
-void GatherSegments(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request,
-                    std::vector<uint64_t> &latencies)
+void GatherSegments(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request)
 {
     if (request.segmentBytes == 656U) {
-        GatherFixed<656>(dst, src, request.srcStride, request.segmentCount, latencies);
+        GatherFixed<656>(dst, src, request.srcStride, request.segmentCount);
     } else if (request.segmentBytes == 576U) {
-        GatherFixed<576>(dst, src, request.srcStride, request.segmentCount, latencies);
+        GatherFixed<576>(dst, src, request.srcStride, request.segmentCount);
     } else if (request.segmentBytes == 1152U) {
-        GatherFixed<1152>(dst, src, request.srcStride, request.segmentCount, latencies);
+        GatherFixed<1152>(dst, src, request.srcStride, request.segmentCount);
     } else {
-        GatherDynamic(dst, src, request.srcStride, request.segmentCount, request.segmentBytes, latencies);
+        GatherDynamic(dst, src, request.srcStride, request.segmentCount, request.segmentBytes);
     }
 }
 
-MemcpyLatencyStats CalculateMemcpyLatencyStats(std::vector<uint64_t> latencies)
+struct GatherTask {
+    uint8_t *dst;
+    const uint8_t *src;
+    HybmAggregateUrmaDemoRequest request;
+    uint32_t threadCount;
+};
+
+void GatherPartition(const GatherTask &task, uint32_t threadIndex)
 {
-    MemcpyLatencyStats stats{};
-    if (latencies.empty()) {
-        return stats;
+    const uint32_t begin = static_cast<uint32_t>(
+        static_cast<uint64_t>(task.request.segmentCount) * threadIndex / task.threadCount);
+    const uint32_t end = static_cast<uint32_t>(
+        static_cast<uint64_t>(task.request.segmentCount) * (threadIndex + 1U) / task.threadCount);
+    if (begin == end) {
+        return;
     }
-    std::sort(latencies.begin(), latencies.end());
-    stats.count = latencies.size();
-    stats.minNs = latencies.front();
-    stats.maxNs = latencies.back();
-    uint64_t totalNs = 0;
-    for (const auto latency : latencies) {
-        totalNs += latency;
+    auto request = task.request;
+    request.segmentCount = end - begin;
+    GatherSegments(task.dst + static_cast<uint64_t>(begin) * request.segmentBytes,
+                   task.src + static_cast<uint64_t>(begin) * request.srcStride, request);
+}
+
+class GatherThreadPool {
+public:
+    explicit GatherThreadPool(uint32_t threadCount) : threadCount_(threadCount)
+    {
+        for (uint32_t index = 1; index < threadCount_; ++index) {
+            workers_.emplace_back(&GatherThreadPool::WorkerLoop, this, index);
+        }
     }
-    stats.averageNs = static_cast<double>(totalNs) / static_cast<double>(stats.count);
-    stats.p95Ns = latencies[(stats.count * 95U + 99U) / 100U - 1U];
-    stats.p99Ns = latencies[(stats.count * 99U + 99U) / 100U - 1U];
-    return stats;
+
+    ~GatherThreadPool()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        workCv_.notify_all();
+        for (auto &worker : workers_) {
+            worker.join();
+        }
+    }
+
+    uint32_t ThreadCount() const
+    {
+        return threadCount_;
+    }
+
+    void Run(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            task_ = {dst, src, request, threadCount_};
+            pendingWorkers_ = static_cast<uint32_t>(workers_.size());
+            ++generation_;
+        }
+        workCv_.notify_all();
+        GatherPartition(task_, 0);
+        std::unique_lock<std::mutex> lock(mutex_);
+        doneCv_.wait(lock, [this]() { return pendingWorkers_ == 0U; });
+    }
+
+private:
+    void WorkerLoop(uint32_t threadIndex)
+    {
+        uint64_t observedGeneration = 0;
+        while (true) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            workCv_.wait(lock, [this, observedGeneration]() {
+                return stopping_ || generation_ != observedGeneration;
+            });
+            if (stopping_) {
+                return;
+            }
+            observedGeneration = generation_;
+            lock.unlock();
+            GatherPartition(task_, threadIndex);
+            lock.lock();
+            if (--pendingWorkers_ == 0U) {
+                doneCv_.notify_one();
+            }
+        }
+    }
+
+    uint32_t threadCount_;
+    std::vector<std::thread> workers_;
+    std::mutex mutex_;
+    std::condition_variable workCv_;
+    std::condition_variable doneCv_;
+    GatherTask task_{};
+    uint64_t generation_{0};
+    uint32_t pendingWorkers_{0};
+    bool stopping_{false};
+};
+
+GatherThreadPool &GetGatherThreadPool(uint32_t threadCount)
+{
+    static std::mutex poolMutex;
+    static std::unique_ptr<GatherThreadPool> pool;
+    std::lock_guard<std::mutex> lock(poolMutex);
+    if (pool == nullptr || pool->ThreadCount() != threadCount) {
+        pool = std::make_unique<GatherThreadPool>(threadCount);
+    }
+    return *pool;
 }
 } // namespace
 
-py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t aggregate)
+py::tuple AggregateWaitAndGatherDemo(uint64_t mailbox, uint64_t source, uint64_t aggregate, uint32_t gatherThreads)
 {
+    if (gatherThreads == 0U || gatherThreads > 64U) {
+        throw py::value_error("gatherThreads must be in [1, 64]");
+    }
+    auto &threadPool = GetGatherThreadPool(gatherThreads);
     auto *message = reinterpret_cast<HybmAggregateUrmaDemoMessage *>(mailbox);
     HybmAggregateUrmaDemoRequest request{};
     uint64_t waitNs = 0;
     uint64_t gatherNs = 0;
-    std::vector<uint64_t> memcpyLatencies;
     {
         py::gil_scoped_release release;
         const auto waitBegin = Clock::now();
         while (__atomic_load_n(&message->doorbell, __ATOMIC_ACQUIRE) == 0U) {}
         const auto gatherBegin = Clock::now();
         request = message->request;
-        memcpyLatencies.reserve(request.segmentCount);
         auto *src = reinterpret_cast<const uint8_t *>(source);
         auto *dst = reinterpret_cast<uint8_t *>(aggregate);
-        GatherSegments(dst, src, request, memcpyLatencies);
+        threadPool.Run(dst, src, request);
         const auto gatherEnd = Clock::now();
         waitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherBegin - waitBegin).count();
         gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(gatherEnd - gatherBegin).count();
     }
-    const auto stats = CalculateMemcpyLatencyStats(std::move(memcpyLatencies));
-    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs, stats.count,
-                          stats.averageNs, stats.p95Ns, stats.p99Ns, stats.minNs, stats.maxNs);
+    return py::make_tuple(request.dstNewGva, request.readyGva, request.totalBytes, waitNs, gatherNs);
 }
 
 void DefineAccOffloadConfig(py::module_ &m)
@@ -178,7 +247,7 @@ void DefineAccOffloadApi(py::module_ &m)
           py::arg("dstPtrs"), py::arg("lenPtrs"), py::arg("listNum"), py::arg("deviceId"));
 
     m.def("aggregate_wait_and_gather_demo", &AggregateWaitAndGatherDemo, py::arg("mailbox"), py::arg("source"),
-          py::arg("aggregate"));
+          py::arg("aggregate"), py::arg("gatherThreads") = 1U);
 
     m.def("npu_kvcache_scatter_copy", &offload_kvcache_scatter_copy, py::call_guard<py::gil_scoped_release>(),
           py::arg("hbmKpe"), py::arg("hbmCkv"), py::arg("hbmBlockTable"), py::arg("dramBlockTable"),

@@ -36,6 +36,7 @@ print(os.path.dirname(pybind11.__file__),end='');"
     list(APPEND CMAKE_PREFIX_PATH ${PYBIND11_DIR})
 
     find_package(pybind11 REQUIRED)
+    find_package(Threads REQUIRED)
     include_directories(
             ${Python3_INCLUDE_DIRS}
             ${pybind11_INCLUDE_DIRS}
@@ -43,6 +44,6 @@ print(os.path.dirname(pybind11.__file__),end='');"
     pybind11_add_module(_pymf_acc_offload pymf_acc_offload.cpp)
     set_target_properties(_pymf_acc_offload PROPERTIES CXX_STANDARD 17)
     set_target_properties(_pymf_acc_offload PROPERTIES OUTPUT_NAME "_pymf_acc_offload")
-    target_link_libraries(_pymf_acc_offload PRIVATE acc_offload_shared)
+    target_link_libraries(_pymf_acc_offload PRIVATE acc_offload_shared Threads::Threads)
 
 endif ()

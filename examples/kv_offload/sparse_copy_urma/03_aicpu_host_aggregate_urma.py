@@ -87,20 +87,6 @@ def print_timing_summary(title, stage_samples, stage_bytes):
     print_table(title, ("stage", "avg(us)", "min(us)", "max(us)", "P95(us)", "P99(us)", "GiB/s"), rows)
 
 
-def print_memcpy_summary(rounds, copies, copy_bytes, samples):
-    average_ns = sum(item[0] for item in samples) / rounds
-    p95_ns = sum(item[1] for item in samples) / rounds
-    p99_ns = sum(item[2] for item in samples) / rounds
-    minimum_ns = min(item[3] for item in samples)
-    maximum_ns = max(item[4] for item in samples)
-    bandwidth = copy_bytes * 1e9 / average_ns / (1024 ** 3)
-    row = (rounds, copies, copy_bytes, f"{average_ns:.1f}", f"{minimum_ns}", f"{maximum_ns}",
-           f"{p95_ns:.1f}", f"{p99_ns:.1f}", f"{bandwidth:.3f}")
-    headers = ("rounds", "copies/round", "bytes/copy", "avg(ns)", "min(ns)", "max(ns)", "P95(ns)", "P99(ns)",
-               "GiB/s")
-    print_table("Host memcpy summary (P95/P99 are means of per-round percentiles)", headers, (row,))
-
-
 def make_layout(count, segment_bytes):
     total = count * segment_bytes
     stride = 2 * segment_bytes
@@ -172,12 +158,11 @@ def run_host(args, handle, bm, listener, layout):
 
     conn, _ = listener.accept()
     stages = {"gather": [], "URMA write": [], "ready signal": [], "host total": []}
-    copy_samples = []
     with conn:
         conn.sendall(b"R")
         for _ in range(args.rounds):
-            result = offload.aggregate_wait_and_gather_demo(mailbox, source, aggregate)
-            dst_new_gva, ready_gva, request_bytes, _, gather_ns, copy_count = result[:6]
+            dst_new_gva, ready_gva, request_bytes, _, gather_ns = offload.aggregate_wait_and_gather_demo(
+                mailbox, source, aggregate, args.gather_threads)
             write_begin = time.perf_counter_ns()
             assert handle.copy_data(aggregate, dst_new_gva, request_bytes, bm.BmCopyType.H2G, 0) == 0
             write_end = time.perf_counter_ns()
@@ -191,10 +176,12 @@ def run_host(args, handle, bm, listener, layout):
             stages["URMA write"].append(write_ns)
             stages["ready signal"].append(ready_ns)
             stages["host total"].append(gather_ns + write_ns + ready_ns)
-            copy_samples.append((result[6], result[7], result[8], result[9], result[10]))
     stage_bytes = {"gather": total, "URMA write": total, "host total": total}
-    print_timing_summary(f"Host summary: rounds={args.rounds}, bytes/round={total}", stages, stage_bytes)
-    print_memcpy_summary(args.rounds, copy_count, args.segment_bytes, copy_samples)
+    print_timing_summary(
+        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
+        stages,
+        stage_bytes,
+    )
 
 
 def copy_to_hbm(handle, bm, source, destination, size):
@@ -247,9 +234,12 @@ def main():
     parser.add_argument("--segments", type=int, default=4096)
     parser.add_argument("--segment-bytes", type=int, default=2048)
     parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--gather-threads", type=int, default=1)
     args = parser.parse_args()
     if args.segments <= 0 or args.segment_bytes <= 0 or args.rounds <= 0:
         parser.error("--segments, --segment-bytes and --rounds must be positive")
+    if not 1 <= args.gather_threads <= 64:
+        parser.error("--gather-threads must be in [1, 64]")
 
     rank = HOST_RANK if args.role == "host" else NPU_RANK
     runtime_device = configure(args.role, args.env_file)
