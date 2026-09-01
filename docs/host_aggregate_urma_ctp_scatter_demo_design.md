@@ -134,8 +134,9 @@ dsb();
 实现见
 [`hybm_aggregate_urma_demo.cc`](../src/acc_offload/csrc/operators/aicpu/hybm_aggregate_urma_demo.cc#L89-L99)。
 输入 cache invalidate、输出 cache clean 和 `dsb` 均计入 `scatterNs`，避免读到旧数据或只测到 AICPU
-cache 写入。656 B、576 B 和 1152 B 使用编译期定长 copy，其他尺寸保留动态 `memcpy`。该实现仍是
-单 AICPU 核测试，不代表最终 scatter 带宽上限。
+cache 写入。656 B、576 B 和 1152 B 使用编译期定长 copy，并提前 4 个 segment 预取 source 和
+strided destination；其他尺寸保留动态 `memcpy`。该实现仍是单 AICPU 核测试，不代表最终 scatter
+带宽上限。
 
 ## 4. 架构与时序
 

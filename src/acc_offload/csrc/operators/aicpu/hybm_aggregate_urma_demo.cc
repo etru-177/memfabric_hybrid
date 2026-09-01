@@ -18,6 +18,7 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uintptr_t kCacheLineBytes = 64U;
+constexpr uint32_t kScatterPrefetchDistance = 4U;
 
 uint64_t ElapsedNs(Clock::time_point begin, Clock::time_point end)
 {
@@ -100,10 +101,17 @@ __attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict destina
 template <size_t Bytes>
 void ScatterFixed(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
 {
+    auto *destination = param.dstBase;
+    const auto *source = param.dstNew;
     for (uint32_t index = 0; index < request.segmentCount; ++index) {
-        auto *destination = param.dstBase + index * request.dstStride;
-        CopyFixed<Bytes>(destination, param.dstNew + index * Bytes);
+        if (request.segmentCount - index > kScatterPrefetchDistance) {
+            __builtin_prefetch(source + kScatterPrefetchDistance * Bytes, 0, 1);
+            __builtin_prefetch(destination + kScatterPrefetchDistance * request.dstStride, 1, 1);
+        }
+        CopyFixed<Bytes>(destination, source);
         FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), Bytes);
+        source += Bytes;
+        destination += request.dstStride;
     }
 }
 
