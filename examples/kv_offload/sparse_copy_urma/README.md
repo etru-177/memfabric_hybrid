@@ -118,8 +118,8 @@ stage/rank/device/地址/长度上下文。不要为绕过
 ## 03：AICPU 发起 Host 聚合
 
 该 Demo 只测一条固定 happy path：AICPU 将 request 和递增 doorbell 合并为一次远端 batch write，Host
-busy-poll 后分块 gather，并用单 writer 与下一块 gather 流水重叠；AICPU 轮询 ready 后按固定 stride
-scatter。TCP 只在计时前做启动屏障，不承载每轮请求或完成通知。
+busy-poll 后整轮 gather 并执行一次 URMA write；AICPU 轮询 ready 后按固定 stride scatter。TCP 只在计时前
+做启动屏障，不承载每轮请求或完成通知。
 
 先使用 local DRAM 验证开关构建并安装 MemFabric 主包，再构建并安装 AICPU kernel：
 
@@ -143,10 +143,8 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --role device --head-ip 127.0.0.1
 ```
 
-默认聚合 `4096 * 2048 B = 8 MiB`。未指定 `--pipeline-chunk-segments` 时，程序会选择约 2 MiB 且
-满足 64 B 边界的流水块；总量不超过一块时自动按整轮单块执行，避免单块线程切换。656 B segment 对应
-3196 个 segment/块。显式传 `0` 也会让统一实现按整轮单块执行，不会切换到旧 helper。两端必须传入相同的 `--segments` 和
-`--segment-bytes`。
+默认聚合 `4096 * 2048 B = 8 MiB`。Host 每轮完成整批 gather 后执行一次 URMA write。两端必须传入相同的
+`--segments` 和 `--segment-bytes`。
 
 Device 的 message 和 ready 控制区默认合并为一次 H2G；timing 是纯输出，不再做无效的初始化 H2G。
 `--device-timing-every N` 每 N 轮回读一次 AICPU timing，传 `0` 可在性能测试时关闭 timing G2H。
@@ -165,7 +163,7 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --rounds 100 --device-timing-every 0
 ```
 
-Host 输出 gather、URMA write、流水总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
+Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
 该程序没有数据校验、超时、重试或异常清理，只用于上板穿刺。
 
 ### memcpy microbenchmark

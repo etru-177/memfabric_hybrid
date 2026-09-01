@@ -32,8 +32,8 @@
 ```text
 AICPU 一次 batch 写 Host request + generation doorbell
   -> Host CPU 观察 doorbell
-  -> Host CPU 分块 gather
-  -> 单 writer 将上一块同步 copy_data(H2G) 到 dst_new
+  -> Host CPU 整轮 gather
+  -> 一次同步 copy_data(H2G) 到 dst_new
   -> Host 写同一 generation 到 NPU ready
   -> AICPU scatter
 ```
@@ -85,8 +85,7 @@ aggregate_gather_range_demo(source, aggregate, srcStride, segmentCount, segmentB
 ```
 
 前者 busy-poll 当前 generation 的 doorbell；后者按 request 中的 `segmentCount`、`segmentBytes` 和
-`srcStride` 循环 memcpy 到连续 `host_agg`。默认约 2 MiB/块，并由一个 writer 线程同步写上一块，
-从而与主线程 gather 下一块重叠。实现见
+`srcStride` 循环 memcpy 到连续 `host_agg`。整轮 gather 完成后再提交一次大包写。实现见
 [`pymf_acc_offload.cpp`](../src/acc_offload/csrc/python_wrapper/pymf_acc_offload.cpp#L27-L54)。
 
 这样 gather 数据不包含 Python 逐段循环开销。
@@ -95,8 +94,8 @@ aggregate_gather_range_demo(source, aggregate, srcStride, segmentCount, segmentB
 
 Host 使用同步 `BigMemory.copy_data(..., H2G)`：
 
-1. 每个流水块执行 `host_agg + offset -> dst_new + offset`；显式关闭流水时一次写 `totalBytes`；
-2. 所有块完成后，将 Host mailbox 中的 generation 写入 NPU ready，长度为 8 B。
+1. 执行一次 `host_agg -> dst_new`，长度为 `totalBytes`；
+2. 数据写完成后，将 Host mailbox 中的 generation 写入 NPU ready，长度为 8 B。
 
 Demo 调用位置见
 [`03_aicpu_host_aggregate_urma.py`](../examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py#L115-L143)。
@@ -108,7 +107,7 @@ Host UBC_CTP Fence 会轮询 JFC，直到本批 WQE 完成：
 所以顺序是：
 
 ```text
-最后一个 dst_new 块写完成并 Fence 返回
+dst_new 整批写完成并 Fence 返回
   < ready 写提交
   < ready Fence 返回
   < AICPU 观察到 ready
@@ -147,7 +146,7 @@ flowchart LR
     M --> C["Host CPU busy-poll + gather"]
     S["Host sparse src"] --> C
     C --> G["Host registered host_agg"]
-    G -->|"chunked copy_data(H2G)"| U
+    G -->|"copy_data(totalBytes, H2G)"| U
     U --> N["NPU HBM dst_new"]
     C -->|"8 B ready write"| U
     N --> A
@@ -167,10 +166,10 @@ sequenceDiagram
     HU->>HM: request body becomes visible
     HU->>HM: ordered doorbell becomes visible
     HC->>HM: busy-poll doorbell
-    HC->>HM: chunked gather sparse src -> host_agg
-    HC->>HU: writer copy_data(previous chunk, dst_new, H2G)
-    HU->>NH: chunk Write
-    HU-->>HC: per-chunk Host Fence returns after CQ completion
+    HC->>HM: gather sparse src -> host_agg
+    HC->>HU: copy_data(host_agg, dst_new, totalBytes, H2G)
+    HU->>NH: data Write
+    HU-->>HC: Host Fence returns after CQ completion
     HC->>HU: copy_data(generation, ready, 8, H2G)
     HU->>NH: ready=generation
     HU-->>HC: Host Fence returns after CQ completion
@@ -240,16 +239,14 @@ struct alignas(64) HybmAggregateUrmaDemoMessage {
 | 1 | NPU Host launcher | `AccOffloadAggregateUrmaDemo(...)` | 启动并同步等待 AICPU kernel |
 | 2 | AICPU | `HybmBatchWriteStrict(request body + doorbell)` | 一次 batch 提交有序控制消息；返回不是远端完成 |
 | 3 | Host CPU | `aggregate_wait_demo(...)` | busy-poll 当前 generation |
-| 4 | Host CPU | `aggregate_gather_range_demo(...)` | C++ 分块 gather，并与单 writer 重叠 |
-| 5 | Host CPU | `copy_data(host_agg + offset, dstNewGva + offset, chunkBytes, H2G, 0)` | 每块同步返回包含 Host Channel Fence |
+| 4 | Host CPU | `aggregate_gather_range_demo(...)` | C++ 完成整轮 gather |
+| 5 | Host CPU | `copy_data(host_agg, dstNewGva, totalBytes, H2G, 0)` | 整批同步返回包含 Host Channel Fence |
 | 6 | Host CPU | `copy_data(doorbell, readyGva, 8, H2G, 0)` | 数据写完成后发布 ready；同步返回包含 Fence |
 | 7 | AICPU | invalidate + poll `ready` | ready 可见后才进入 scatter |
 | 8 | AICPU | invalidate + `memcpy` + cache clean | 读取 Host 新写数据，并使 scatter 结果离开 AICPU cache |
 | 9 | NPU Host launcher | `aclrtSynchronizeStream` | AICPU 请求、等待和 scatter 全部结束 |
 
-默认块大小约 2 MiB；可通过 `--pipeline-chunk-segments 0` 让统一实现按整轮单块执行，或显式指定块内
-segment 数；这里没有旧 gather helper 的回退分支。
-HCOMM 仍可能按 `maxWriteSize` 把每块拆成多个物理 URMA WR；实现位于
+Host 只向 HCOMM 提交一次 `totalBytes` 写。HCOMM 仍可能按 `maxWriteSize` 把它拆成多个物理 URMA WR；实现位于
 `C:/code/cann/hcomm/src/base_comm/resources/endpoint_pairs/channels/host/host_cpu_urma_channel.cc:253-340`。
 
 ## 8. 时延口径

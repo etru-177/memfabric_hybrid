@@ -9,7 +9,6 @@ import math
 import os
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from urma_example_common import (
     DEFAULT_ENV_FILE,
@@ -23,7 +22,6 @@ from urma_example_common import (
 
 
 CONTROL_BYTES = 3 * 4096
-DEFAULT_PIPELINE_BYTES = 2 * 1024 * 1024
 POOL_ALIGN = 2 << 20
 
 
@@ -91,12 +89,6 @@ def configure_host_affinity(cpu_list):
     except (OSError, ValueError) as error:
         raise HostAffinityError(str(error)) from error
     print(f"Host CPU affinity: {','.join(str(cpu) for cpu in sorted(cpus))}")
-
-
-def default_pipeline_chunk_segments(segment_bytes):
-    alignment = 64 // math.gcd(64, segment_bytes)
-    chunk_segments = max(1, DEFAULT_PIPELINE_BYTES // segment_bytes)
-    return max(alignment, chunk_segments // alignment * alignment)
 
 
 def summarize(values):
@@ -193,9 +185,7 @@ def timed_copy(handle, bm, source, destination, size):
     return time.perf_counter_ns() - begin
 
 
-def run_host_round(
-    args, handle, bm, offload, executor, mailbox, source, aggregate, expected_doorbell
-):
+def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell):
     result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
     expected_total = args.segments * args.segment_bytes
@@ -204,38 +194,13 @@ def run_host_round(
         expected_total, expected_stride, args.segments, args.segment_bytes)
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
-    pipeline_begin = time.perf_counter_ns()
-    gather_ns = 0
-    write_ns = 0
-    chunk_segments = args.pipeline_chunk_segments or segment_count
-    if chunk_segments >= segment_count:
-        gather_ns = offload.aggregate_gather_range_demo(
-            source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads
-        )
-        write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
-        pipeline_ns = time.perf_counter_ns() - pipeline_begin
-        return ready_gva, total_bytes, gather_ns, write_ns, pipeline_ns
-
-    write_future = None
-    for segment_begin in range(0, segment_count, chunk_segments):
-        chunk_count = min(chunk_segments, segment_count - segment_begin)
-        byte_offset = segment_begin * segment_bytes
-        gather_ns += offload.aggregate_gather_range_demo(
-            source + segment_begin * src_stride,
-            aggregate + byte_offset,
-            src_stride,
-            chunk_count,
-            segment_bytes,
-            args.gather_threads,
-        )
-        if write_future is not None:
-            write_ns += write_future.result()
-        write_future = executor.submit(
-            timed_copy, handle, bm, aggregate + byte_offset, dst_new_gva + byte_offset, chunk_count * segment_bytes)
-    if write_future is not None:
-        write_ns += write_future.result()
-    pipeline_ns = time.perf_counter_ns() - pipeline_begin
-    return ready_gva, total_bytes, gather_ns, write_ns, pipeline_ns
+    work_begin = time.perf_counter_ns()
+    gather_ns = offload.aggregate_gather_range_demo(
+        source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads
+    )
+    write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
+    work_ns = time.perf_counter_ns() - work_begin
+    return ready_gva, total_bytes, gather_ns, write_ns, work_ns
 
 
 def signal_ready(handle, bm, mailbox, ready_gva):
@@ -258,29 +223,23 @@ def run_host(args, handle, bm, listener, layout):
     from _pymf_acc_offload import offload
 
     conn, _ = listener.accept()
-    pipelined = 0 < args.pipeline_chunk_segments < args.segments
-    stage_names = ("gather work", "URMA write work", "pipeline", "host total") if pipelined else (
-        "gather", "URMA write", "host total")
+    stage_names = ("gather", "URMA write", "host total")
     stages = {name: [] for name in stage_names}
     offload.aggregate_gather_range_demo(source, aggregate, stride, 0, args.segment_bytes, args.gather_threads)
-    with conn, ThreadPoolExecutor(max_workers=1, thread_name_prefix="urma-writer") as executor:
-        executor.submit(lambda: None).result()
+    with conn:
         conn.sendall(b"R")
         for round_index in range(args.rounds):
             expected_doorbell = round_index + 1
-            ready_gva, request_bytes, gather_ns, write_ns, pipeline_ns = run_host_round(
-                args, handle, bm, offload, executor, mailbox, source, aggregate, expected_doorbell
+            ready_gva, _, gather_ns, write_ns, work_ns = run_host_round(
+                args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell
             )
             ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
-            stages["gather work" if pipelined else "gather"].append(gather_ns)
-            stages["URMA write work" if pipelined else "URMA write"].append(write_ns)
-            if pipelined:
-                stages["pipeline"].append(pipeline_ns)
-            stages["host total"].append(pipeline_ns + ready_ns)
+            stages["gather"].append(gather_ns)
+            stages["URMA write"].append(write_ns)
+            stages["host total"].append(work_ns + ready_ns)
     stage_bytes = {name: total for name in stages}
     print_timing_summary(
-        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, "
-        f"chunk_segments={args.pipeline_chunk_segments}, bytes/round={total}",
+        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
         stages,
         stage_bytes,
     )
@@ -357,7 +316,6 @@ def main():
     parser.add_argument("--segment-bytes", type=int, default=2048)
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--gather-threads", type=int, default=1)
-    parser.add_argument("--pipeline-chunk-segments", type=int)
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")
@@ -366,13 +324,6 @@ def main():
         parser.error("--segments, --segment-bytes and --rounds must be positive")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
-    if args.pipeline_chunk_segments is None:
-        chunk_segments = default_pipeline_chunk_segments(args.segment_bytes)
-        args.pipeline_chunk_segments = chunk_segments if args.segments > chunk_segments else 0
-    if args.pipeline_chunk_segments < 0:
-        parser.error("--pipeline-chunk-segments must be non-negative")
-    if args.pipeline_chunk_segments > 0 and args.pipeline_chunk_segments * args.segment_bytes % 64 != 0:
-        parser.error("pipeline chunk byte size must be 64-byte aligned")
     if args.device_timing_every < 0:
         parser.error("--device-timing-every must be non-negative")
 
