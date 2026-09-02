@@ -19,6 +19,9 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <pthread.h>
+#include <sched.h>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -45,6 +48,37 @@ inline void CpuRelax()
 #else
     std::this_thread::yield();
 #endif
+}
+
+std::vector<int> GetGatherCpus(uint32_t threadCount)
+{
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    if (sched_getaffinity(0, sizeof(affinity), &affinity) != 0) {
+        return {};
+    }
+    std::vector<int> cpus;
+    const int callerCpu = sched_getcpu();
+    if (callerCpu >= 0 && CPU_ISSET(callerCpu, &affinity)) {
+        cpus.push_back(callerCpu);
+    }
+    for (int cpu = 0; cpu < CPU_SETSIZE && cpus.size() < threadCount; ++cpu) {
+        if (CPU_ISSET(cpu, &affinity) && cpu != callerCpu) {
+            cpus.push_back(cpu);
+        }
+    }
+    return cpus;
+}
+
+void PinGatherWorker(int cpu)
+{
+    if (cpu < 0) {
+        return;
+    }
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(cpu, &affinity);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(affinity), &affinity);
 }
 
 template <size_t Bytes>
@@ -122,8 +156,13 @@ class GatherThreadPool {
 public:
     explicit GatherThreadPool(uint32_t threadCount) : threadCount_(threadCount)
     {
+        const auto cpus = GetGatherCpus(threadCount_);
+        if (!cpus.empty() && cpus.size() < threadCount_) {
+            throw std::invalid_argument("gatherThreads exceeds CPUs allowed by process affinity");
+        }
         for (uint32_t index = 1; index < threadCount_; ++index) {
-            workers_.emplace_back(&GatherThreadPool::WorkerLoop, this, index);
+            const int cpu = index < cpus.size() ? cpus[index] : -1;
+            workers_.emplace_back(&GatherThreadPool::WorkerLoop, this, index, cpu);
         }
     }
 
@@ -181,8 +220,9 @@ private:
         });
     }
 
-    void WorkerLoop(uint32_t threadIndex)
+    void WorkerLoop(uint32_t threadIndex, int cpu)
     {
+        PinGatherWorker(cpu);
         uint64_t observedGeneration = 0;
         while (true) {
             WaitForWork(observedGeneration);
