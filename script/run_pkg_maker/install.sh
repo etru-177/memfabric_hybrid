@@ -388,6 +388,7 @@ function try_install_extend()
         -isystem ${torch_dir}/include/c10/core \
         -isystem ${torch_dir}/include/ATen \
         -isystem ${torch_dir}/include/ATen/detail \
+        -isystem ${torch_npu_dir} \
         -isystem ${torch_npu_dir}/include \
         -isystem ${torch_npu_dir}/include/torch_npu/csrc/aten \
         -isystem ${torch_npu_dir}/include/torch_npu/csrc/core/npu \
