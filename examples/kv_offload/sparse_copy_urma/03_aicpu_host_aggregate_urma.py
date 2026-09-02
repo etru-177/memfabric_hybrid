@@ -279,7 +279,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
                                           "libmf_hybm_accoffload.so"))
         launch = library.AccOffloadAggregateUrmaDemo
-        launch.argtypes = [ctypes.c_uint64] * 5 + [ctypes.c_uint16]
+        launch.argtypes = ([ctypes.c_uint64] * 5 + [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint64,
+                                                   ctypes.c_uint16])
         launch.restype = ctypes.c_int32
         for round_index in range(args.rounds):
             message.doorbell = round_index + 1
@@ -287,7 +288,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
             stage_device_control(handle, bm, control, hbm_gva)
             launch_begin = time.perf_counter_ns()
             assert launch(hbm_va, hbm_va + 4096, hbm_va + dst_new_offset, hbm_va + dst_base_offset,
-                          hbm_va + 8192, runtime_device) == 0
+                          hbm_va + 8192, args.segments, args.segment_bytes, stride, runtime_device) == 0
             launch_end = time.perf_counter_ns()
             stages["launch sync"].append(launch_end - launch_begin)
             timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0

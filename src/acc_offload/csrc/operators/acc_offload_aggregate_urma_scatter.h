@@ -6,7 +6,6 @@
 #ifndef ACC_OFFLOAD_AGGREGATE_URMA_SCATTER_H
 #define ACC_OFFLOAD_AGGREGATE_URMA_SCATTER_H
 
-#include "aicpu/hybm_aggregate_urma_demo.h"
 #include "kernel_operator.h"
 
 #define HYBM_AICORE_KERNEL __attribute__((always_inline)) __aicore__ __inline__
@@ -24,12 +23,12 @@ class AggregateUrmaScatterKernel {
 public:
     HYBM_AICORE_KERNEL AggregateUrmaScatterKernel() {}
 
-    HYBM_AICORE_KERNEL void Init(GM_ADDR message, GM_ADDR dstNew, GM_ADDR dstBase)
+    HYBM_AICORE_KERNEL void Init(GM_ADDR dstNew, GM_ADDR dstBase, uint32_t segmentCount, uint32_t segmentBytes,
+                                 uint64_t dstStride)
     {
-        auto *request = &reinterpret_cast<__gm__ HybmAggregateUrmaDemoMessage *>(message)->request;
-        segmentCount_ = request->segmentCount;
-        segmentBytes_ = request->segmentBytes;
-        dstStride_ = request->dstStride;
+        segmentCount_ = segmentCount;
+        segmentBytes_ = segmentBytes;
+        dstStride_ = dstStride;
         source_ = reinterpret_cast<__gm__ uint8_t *>(dstNew);
         destination_ = reinterpret_cast<__gm__ uint8_t *>(dstBase);
         blockIndex_ = AscendC::GetBlockIdx();

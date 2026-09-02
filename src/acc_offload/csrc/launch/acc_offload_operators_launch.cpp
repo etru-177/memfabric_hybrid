@@ -266,7 +266,8 @@ int32_t PrepareAggregateUrmaDemoArgs(aclrtFuncHandle function, HybmAggregateUrma
 }
 
 int32_t LaunchAggregateUrmaDemoKernel(aclrtFuncHandle function, aclrtStream stream,
-                                      const HybmAggregateUrmaDemoParam &param, uint16_t deviceId)
+                                      const HybmAggregateUrmaDemoParam &param, uint32_t segmentCount,
+                                      uint32_t segmentBytes, uint64_t dstStride, uint16_t deviceId)
 {
     aclrtArgsHandle argsHandle = nullptr;
     auto ret = PrepareAggregateUrmaDemoArgs(function, param, argsHandle);
@@ -278,9 +279,8 @@ int32_t LaunchAggregateUrmaDemoKernel(aclrtFuncHandle function, aclrtStream stre
         OFFLOAD_LOG_ERROR("launch aggregate URMA demo failed, deviceId: " << deviceId << " ret: " << ret);
         return BM_DL_FUNCTION_FAILED;
     }
-    auto scatterCallback = [&param, stream]() -> int {
-        OffloadOpsAggregateUrmaScatter(const_cast<HybmAggregateUrmaDemoMessage *>(param.message), param.dstNew,
-                                       param.dstBase, stream);
+    auto scatterCallback = [&param, segmentCount, segmentBytes, dstStride, stream]() -> int {
+        OffloadOpsAggregateUrmaScatter(param.dstNew, param.dstBase, segmentCount, segmentBytes, dstStride, stream);
         return 0;
     };
     at_npu::native::OpCommand::RunOpApiV2("acc_aggregate_urma_scatter", scatterCallback);
@@ -292,7 +292,8 @@ int32_t LaunchAggregateUrmaDemoKernel(aclrtFuncHandle function, aclrtStream stre
     return BM_OK;
 }
 
-int32_t LaunchAggregateUrmaDemo(const HybmAggregateUrmaDemoParam &param, uint16_t deviceId)
+int32_t LaunchAggregateUrmaDemo(const HybmAggregateUrmaDemoParam &param, uint32_t segmentCount,
+                                uint32_t segmentBytes, uint64_t dstStride, uint16_t deviceId)
 {
     try {
         c10_npu::OptionalNPUGuard npuGuard;
@@ -305,7 +306,10 @@ int32_t LaunchAggregateUrmaDemo(const HybmAggregateUrmaDemoParam &param, uint16_
         }
         aclrtFuncHandle function = nullptr;
         const auto ret = GetAggregateUrmaDemoFunction(deviceId, function);
-        return ret == BM_OK ? LaunchAggregateUrmaDemoKernel(function, npuStream, param, deviceId) : ret;
+        return ret == BM_OK
+                   ? LaunchAggregateUrmaDemoKernel(function, npuStream, param, segmentCount, segmentBytes, dstStride,
+                                                   deviceId)
+                   : ret;
     } catch (const std::exception &exception) {
         OFFLOAD_LOG_ERROR("aggregate URMA demo raised exception, deviceId: " << deviceId
                                                                              << " error: " << exception.what());
@@ -395,7 +399,8 @@ int32_t LaunchKvcacheScatterCopy(const HybmKvcacheScatterCopyParam &param, uint1
 
 extern "C" {
 int32_t AccOffloadAggregateUrmaDemo(uint64_t message, uint64_t ready, uint64_t dstNew, uint64_t dstBase,
-                                    uint64_t timing, uint16_t devIdx)
+                                    uint64_t timing, uint32_t segmentCount, uint32_t segmentBytes, uint64_t dstStride,
+                                    uint16_t devIdx)
 {
     HybmAggregateUrmaDemoParam param{};
     param.message = reinterpret_cast<const HybmAggregateUrmaDemoMessage *>(message);
@@ -403,7 +408,7 @@ int32_t AccOffloadAggregateUrmaDemo(uint64_t message, uint64_t ready, uint64_t d
     param.dstNew = reinterpret_cast<uint8_t *>(dstNew);
     param.dstBase = reinterpret_cast<uint8_t *>(dstBase);
     param.timing = reinterpret_cast<HybmAggregateUrmaDemoTiming *>(timing);
-    return LaunchAggregateUrmaDemo(param, devIdx);
+    return LaunchAggregateUrmaDemo(param, segmentCount, segmentBytes, dstStride, devIdx);
 }
 
 void AccOffloadSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *sizePtr, uint8_t devIdx)
