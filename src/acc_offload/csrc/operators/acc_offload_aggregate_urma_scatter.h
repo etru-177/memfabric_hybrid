@@ -54,7 +54,7 @@ private:
         auto local = copyQueue_.AllocTensor<uint8_t>();
         AscendC::DataCopyExtParams params{1, segmentBytes_, 0, 0, 0};
         AscendC::DataCopyPadExtParams<uint8_t> pad{false, 0, 0, 0};
-        AscendC::DataCopyPad<uint8_t, AscendC::PaddingMode::Normal>(local, source, params, pad);
+        AscendC::DataCopyPad(local, source, params, pad);
         copyQueue_.EnQue<uint8_t>(local);
     }
 
@@ -64,7 +64,7 @@ private:
         destination.SetGlobalBuffer(destination_ + static_cast<uint64_t>(index) * dstStride_);
         auto local = copyQueue_.DeQue<uint8_t>();
         AscendC::DataCopyExtParams params{1, segmentBytes_, 0, 0, 0};
-        AscendC::DataCopyPad<uint8_t, AscendC::PaddingMode::Normal>(destination, local, params);
+        AscendC::DataCopyPad(destination, local, params);
         copyQueue_.FreeTensor(local);
     }
 
