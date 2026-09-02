@@ -280,15 +280,16 @@ def run_npu(args, handle, bm, runtime_device, layout):
                                           "libmf_hybm_accoffload.so"))
         launch = library.AccOffloadAggregateUrmaDemo
         launch.argtypes = ([ctypes.c_uint64] * 5 + [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint64,
-                                                   ctypes.c_uint16])
+                                                   ctypes.c_uint32, ctypes.c_uint16])
         launch.restype = ctypes.c_int32
         for round_index in range(args.rounds):
             message.doorbell = round_index + 1
             ready.value = 0
             stage_device_control(handle, bm, control, hbm_gva)
             launch_begin = time.perf_counter_ns()
+            probe_mode = {"full": 0, "launch": 1, "read": 2, "write": 3}[args.aiv_probe]
             assert launch(hbm_va, hbm_va + 4096, hbm_va + dst_new_offset, hbm_va + dst_base_offset,
-                          hbm_va + 8192, args.segments, args.segment_bytes, stride, runtime_device) == 0
+                          hbm_va + 8192, args.segments, args.segment_bytes, stride, probe_mode, runtime_device) == 0
             launch_end = time.perf_counter_ns()
             stages["launch sync"].append(launch_end - launch_begin)
             timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
@@ -318,6 +319,7 @@ def main():
     parser.add_argument("--segment-bytes", type=int, default=2048)
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--gather-threads", type=int, default=1)
+    parser.add_argument("--aiv-probe", choices=("full", "launch", "read", "write"), default="full")
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")

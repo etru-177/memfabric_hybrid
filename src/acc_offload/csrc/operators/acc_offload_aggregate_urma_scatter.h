@@ -15,11 +15,12 @@ public:
     HYBM_AICORE_KERNEL explicit AggregateUrmaScatterKernel(AscendC::TPipe *pipe) : pipe_(pipe) {}
 
     HYBM_AICORE_KERNEL void Init(GM_ADDR dstNew, GM_ADDR dstBase, uint32_t segmentCount, uint32_t segmentBytes,
-                                 uint64_t dstStride)
+                                 uint64_t dstStride, uint32_t probeMode)
     {
         segmentCount_ = segmentCount;
         segmentBytes_ = segmentBytes;
         dstStride_ = dstStride;
+        probeMode_ = probeMode;
         source_ = reinterpret_cast<__gm__ uint8_t *>(dstNew);
         destination_ = reinterpret_cast<__gm__ uint8_t *>(dstBase);
         blockIndex_ = AscendC::GetBlockIdx();
@@ -30,11 +31,27 @@ public:
 
     HYBM_AICORE_KERNEL void Process()
     {
+        if (probeMode_ == 1U) {
+            return;
+        }
         const uint32_t segmentsPerBlock = (segmentCount_ + blockCount_ - 1U) / blockCount_;
         const uint32_t begin = blockIndex_ * segmentsPerBlock;
         const uint32_t candidateEnd = begin + segmentsPerBlock;
         const uint32_t end = candidateEnd < segmentCount_ ? candidateEnd : segmentCount_;
         if (begin >= end) {
+            return;
+        }
+        if (probeMode_ == 2U) {
+            CopyIn(begin);
+            auto local = copyQueue_.DeQue<uint8_t>();
+            copyQueue_.FreeTensor(local);
+            return;
+        }
+        if (probeMode_ == 3U) {
+            auto local = copyQueue_.AllocTensor<uint8_t>();
+            AscendC::Duplicate(local, static_cast<uint8_t>(0), segmentBytes_);
+            copyQueue_.EnQue<uint8_t>(local);
+            CopyOut(begin);
             return;
         }
         CopyIn(begin);
@@ -75,6 +92,7 @@ private:
     uint64_t dstStride_;
     uint32_t segmentCount_;
     uint32_t segmentBytes_;
+    uint32_t probeMode_;
     uint32_t blockIndex_;
     uint32_t blockCount_;
 };
