@@ -30,9 +30,11 @@ struct alignas(64) HybmAggregateUrmaDemoMessage {
 struct alignas(64) HybmAggregateUrmaDemoTiming {
     uint64_t requestNs;
     uint64_t waitHostNs;
+    uint64_t scatterCopyNs;
+    uint64_t scatterPublishNs;
     uint64_t scatterNs;
     uint64_t totalNs;
-    uint8_t padding[32];
+    uint8_t padding[16];
 };
 
 struct HybmAggregateUrmaDemoParam {

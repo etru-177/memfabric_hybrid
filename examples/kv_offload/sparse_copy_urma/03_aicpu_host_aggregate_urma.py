@@ -47,9 +47,11 @@ class Timing(ctypes.Structure):
     _fields_ = [
         ("request_ns", ctypes.c_uint64),
         ("wait_host_ns", ctypes.c_uint64),
+        ("scatter_copy_ns", ctypes.c_uint64),
+        ("scatter_publish_ns", ctypes.c_uint64),
         ("scatter_ns", ctypes.c_uint64),
         ("total_ns", ctypes.c_uint64),
-        ("padding", ctypes.c_uint8 * 32),
+        ("padding", ctypes.c_uint8 * 16),
     ]
 
 
@@ -273,7 +275,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
     timing_enabled = args.device_timing_every > 0
     stages = {"launch sync": []}
     if timing_enabled:
-        stages.update({"scatter": [], "AICPU e2e": []})
+        stages.update({"scatter copy": [], "publish barrier": [], "scatter total": [], "AICPU e2e": []})
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
@@ -294,9 +296,11 @@ def run_npu(args, handle, bm, runtime_device, layout):
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
                                         bm.BmCopyType.G2H, 0) == 0
-                stages["scatter"].append(timing.scatter_ns)
+                stages["scatter copy"].append(timing.scatter_copy_ns)
+                stages["publish barrier"].append(timing.scatter_publish_ns)
+                stages["scatter total"].append(timing.scatter_ns)
                 stages["AICPU e2e"].append(timing.total_ns)
-    stage_bytes = {stage: total for stage in stages}
+    stage_bytes = {"launch sync": total, "scatter copy": total, "scatter total": total, "AICPU e2e": total}
     timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
     print_timing_summary(
         f"Device summary: rounds={args.rounds}, timing_samples={timing_samples}, bytes/round={total}",

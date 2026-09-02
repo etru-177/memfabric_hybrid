@@ -116,7 +116,6 @@ void Scatter(const HybmAggregateUrmaDemoParam &param)
     } else {
         ScatterDynamic(param, request);
     }
-    __asm__ __volatile__("dsb ish" : : : "memory");
 }
 } // namespace
 
@@ -143,9 +142,13 @@ extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
     WaitForHost(*param);
     const auto ready = Clock::now();
     Scatter(*param);
+    const auto copied = Clock::now();
+    __asm__ __volatile__("dsb ish" : : : "memory");
     const auto done = Clock::now();
     param->timing->requestNs = ElapsedNs(begin, requested);
     param->timing->waitHostNs = ElapsedNs(requested, ready);
+    param->timing->scatterCopyNs = ElapsedNs(ready, copied);
+    param->timing->scatterPublishNs = ElapsedNs(copied, done);
     param->timing->scatterNs = ElapsedNs(ready, done);
     param->timing->totalNs = ElapsedNs(begin, done);
     FlushDeviceCache(reinterpret_cast<uintptr_t>(param->timing));
