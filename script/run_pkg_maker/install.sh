@@ -366,14 +366,6 @@ function try_install_extend()
         rm -f libmf_hybm_accoffload_kernel.so
         return
     fi
-    npu_stream_header=$(find "${torch_npu_dir}" -type f -path '*/torch_npu/csrc/core/npu/NPUStream.h' -print -quit)
-    if [ -z "${npu_stream_header}" ]; then
-        print "WARNING" "NPUStream.h not found under ${torch_npu_dir}, skip accoffload extend lib."
-        rm -f libmf_hybm_accoffload_kernel.so
-        return
-    fi
-    torch_npu_include_root=${npu_stream_header%/torch_npu/csrc/core/npu/NPUStream.h}
-    print "INFO" "torch_npu include root: ${torch_npu_include_root}"
     ascend_home=${ASCEND_TOOLKIT_HOME:-/usr/local/Ascend/ascend-toolkit/latest}
 
     abi_flag="-D_GLIBCXX_USE_CXX11_ABI=0"
@@ -396,7 +388,7 @@ function try_install_extend()
         -isystem ${torch_dir}/include/c10/core \
         -isystem ${torch_dir}/include/ATen \
         -isystem ${torch_dir}/include/ATen/detail \
-        -isystem ${torch_npu_include_root} \
+        -isystem ${torch_npu_dir} \
         -isystem ${torch_npu_dir}/include \
         -isystem ${torch_npu_dir}/include/torch_npu/csrc/aten \
         -isystem ${torch_npu_dir}/include/torch_npu/csrc/core/npu \
