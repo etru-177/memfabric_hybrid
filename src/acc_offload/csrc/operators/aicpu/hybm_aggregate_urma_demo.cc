@@ -109,7 +109,6 @@ void ScatterFixed(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUr
             __builtin_prefetch(destination + kScatterPrefetchDistance * request.dstStride, 1, 1);
         }
         CopyFixed<Bytes>(destination, source);
-        FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), Bytes);
         source += Bytes;
         destination += request.dstStride;
     }
@@ -120,7 +119,16 @@ void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregate
     for (uint32_t index = 0; index < request.segmentCount; ++index) {
         auto *destination = param.dstBase + index * request.dstStride;
         std::memcpy(destination, param.dstNew + index * request.segmentBytes, request.segmentBytes);
+    }
+}
+
+void FlushScatterDestination(const HybmAggregateUrmaDemoParam &param,
+                             const HybmAggregateUrmaDemoRequest &request)
+{
+    auto *destination = param.dstBase;
+    for (uint32_t index = 0; index < request.segmentCount; ++index) {
         FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), request.segmentBytes);
+        destination += request.dstStride;
     }
 }
 
@@ -137,6 +145,7 @@ void Scatter(const HybmAggregateUrmaDemoParam &param)
     } else {
         ScatterDynamic(param, request);
     }
+    FlushScatterDestination(param, request);
     __asm__ __volatile__("dsb ish" : : : "memory");
 }
 } // namespace
