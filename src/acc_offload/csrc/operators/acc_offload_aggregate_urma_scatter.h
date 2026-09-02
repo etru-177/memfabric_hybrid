@@ -49,7 +49,6 @@ public:
         }
         if (probeMode_ == 3U) {
             auto local = copyQueue_.AllocTensor<uint8_t>();
-            AscendC::Duplicate(local, static_cast<uint8_t>(0), segmentBytes_);
             copyQueue_.EnQue<uint8_t>(local);
             CopyOut(begin);
             return;
