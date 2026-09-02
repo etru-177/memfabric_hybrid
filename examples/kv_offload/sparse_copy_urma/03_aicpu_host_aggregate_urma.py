@@ -273,34 +273,31 @@ def run_npu(args, handle, bm, runtime_device, layout):
     timing_enabled = args.device_timing_every > 0
     stages = {"launch sync": []}
     if timing_enabled:
-        stages.update({"AICPU control": [], "AIV scatter estimate": []})
+        stages.update({"scatter": [], "AICPU e2e": []})
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
                                           "libmf_hybm_accoffload.so"))
         launch = library.AccOffloadAggregateUrmaDemo
-        launch.argtypes = ([ctypes.c_uint64] * 5 + [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint64,
-                                                   ctypes.c_uint32, ctypes.c_uint16])
+        launch.argtypes = [ctypes.c_uint64] * 5 + [ctypes.c_uint16]
         launch.restype = ctypes.c_int32
         for round_index in range(args.rounds):
             message.doorbell = round_index + 1
             ready.value = 0
             stage_device_control(handle, bm, control, hbm_gva)
             launch_begin = time.perf_counter_ns()
-            probe_mode = {"full": 0, "launch": 1, "read": 2, "write": 3}[args.aiv_probe]
             assert launch(hbm_va, hbm_va + 4096, hbm_va + dst_new_offset, hbm_va + dst_base_offset,
-                          hbm_va + 8192, args.segments, args.segment_bytes, stride, probe_mode, runtime_device) == 0
+                          hbm_va + 8192, runtime_device) == 0
             launch_end = time.perf_counter_ns()
             stages["launch sync"].append(launch_end - launch_begin)
             timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
                                         bm.BmCopyType.G2H, 0) == 0
-                launch_ns = launch_end - launch_begin
-                stages["AICPU control"].append(timing.total_ns)
-                stages["AIV scatter estimate"].append(max(0, launch_ns - timing.total_ns))
-    stage_bytes = {"launch sync": total, "AIV scatter estimate": total}
-    timing_samples = len(stages["AICPU control"]) if timing_enabled else 0
+                stages["scatter"].append(timing.scatter_ns)
+                stages["AICPU e2e"].append(timing.total_ns)
+    stage_bytes = {stage: total for stage in stages}
+    timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
     print_timing_summary(
         f"Device summary: rounds={args.rounds}, timing_samples={timing_samples}, bytes/round={total}",
         stages,
@@ -319,7 +316,6 @@ def main():
     parser.add_argument("--segment-bytes", type=int, default=2048)
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--gather-threads", type=int, default=1)
-    parser.add_argument("--aiv-probe", choices=("full", "launch", "read", "write"), default="full")
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")

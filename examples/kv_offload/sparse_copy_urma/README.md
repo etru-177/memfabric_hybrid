@@ -118,8 +118,8 @@ stage/rank/device/地址/长度上下文。不要为绕过
 ## 03：AICPU 发起 Host 聚合
 
 该 Demo 只测一条固定 happy path：AICPU 将 request 和递增 doorbell 合并为一次远端 batch write，Host
-busy-poll 后整轮 gather 并执行一次 URMA write；AICPU 轮询 ready，随后同一 stream 上的 32 核 AIV 按固定
-stride scatter。TCP 只在计时前做启动屏障，不承载每轮请求或完成通知。
+busy-poll 后整轮 gather 并执行一次 URMA write；AICPU 轮询 ready 后按固定 stride scatter。TCP 只在计时前
+做启动屏障，不承载每轮请求或完成通知。
 
 先使用 local DRAM 验证开关构建并安装 MemFabric 主包，再构建并安装 AICPU kernel：
 
@@ -163,8 +163,7 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --rounds 100 --device-timing-every 0
 ```
 
-Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 AICPU control、AIV scatter
-估算值和完整 launch sync。估算值包含 kernel 调度及 launcher 开销，性能比较以 launch sync 为准。
+Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
 该程序没有数据校验、超时、重试或异常清理，只用于上板穿刺。
 
 ### memcpy microbenchmark

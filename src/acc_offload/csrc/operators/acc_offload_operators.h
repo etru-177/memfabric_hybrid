@@ -24,9 +24,6 @@ void OffloadOpsSparseCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtr
 void OffloadOpsGroupPackCopy(uint64_t *srcPtrs, uint64_t *dstPtrs, uint32_t *lenPtrs, uint32_t *numLocalExpertPtr,
                              int64_t *groupList, int64_t *packedGroupList, void *stream);
 
-void OffloadOpsAggregateUrmaScatter(void *dstNew, void *dstBase, uint32_t segmentCount, uint32_t segmentBytes,
-                                    uint64_t dstStride, uint32_t probeMode, void *stream);
-
 #ifdef __cplusplus
 }
 #endif
