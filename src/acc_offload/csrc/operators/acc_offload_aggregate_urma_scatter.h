@@ -31,9 +31,6 @@ public:
 
     HYBM_AICORE_KERNEL void Process()
     {
-        if (probeMode_ == 1U) {
-            return;
-        }
         const uint32_t segmentsPerBlock = (segmentCount_ + blockCount_ - 1U) / blockCount_;
         const uint32_t begin = blockIndex_ * segmentsPerBlock;
         const uint32_t candidateEnd = begin + segmentsPerBlock;
