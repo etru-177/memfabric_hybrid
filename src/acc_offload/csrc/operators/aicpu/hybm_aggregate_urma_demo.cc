@@ -17,7 +17,6 @@
 
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr uintptr_t kCacheLineBytes = 64U;
 constexpr uint32_t kScatterPrefetchDistance = 4U;
 
 uint64_t ElapsedNs(Clock::time_point begin, Clock::time_point end)
@@ -34,23 +33,6 @@ void InvalidateDeviceCache(uintptr_t address)
 void FlushDeviceCache(uintptr_t address)
 {
     __asm__ __volatile__("dc cvac, %0" : : "r"(address) : "memory");
-    __asm__ __volatile__("dsb ish" : : : "memory");
-}
-
-void FlushDeviceCacheRange(uintptr_t address, uint64_t bytes)
-{
-    const uintptr_t end = address + bytes;
-    for (uintptr_t line = address & ~(kCacheLineBytes - 1U); line < end; line += kCacheLineBytes) {
-        __asm__ __volatile__("dc cvac, %0" : : "r"(line) : "memory");
-    }
-}
-
-void InvalidateDeviceCacheRange(uintptr_t address, uint64_t bytes)
-{
-    const uintptr_t end = address + bytes;
-    for (uintptr_t line = address & ~(kCacheLineBytes - 1U); line < end; line += kCacheLineBytes) {
-        __asm__ __volatile__("dc civac, %0" : : "r"(line) : "memory");
-    }
     __asm__ __volatile__("dsb ish" : : : "memory");
 }
 
@@ -122,20 +104,9 @@ void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregate
     }
 }
 
-void FlushScatterDestination(const HybmAggregateUrmaDemoParam &param,
-                             const HybmAggregateUrmaDemoRequest &request)
-{
-    auto *destination = param.dstBase;
-    for (uint32_t index = 0; index < request.segmentCount; ++index) {
-        FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), request.segmentBytes);
-        destination += request.dstStride;
-    }
-}
-
 void Scatter(const HybmAggregateUrmaDemoParam &param)
 {
     const auto &request = param.message->request;
-    InvalidateDeviceCacheRange(reinterpret_cast<uintptr_t>(param.dstNew), request.totalBytes);
     if (request.segmentBytes == 656U) {
         ScatterFixed<656>(param, request);
     } else if (request.segmentBytes == 576U) {
@@ -145,7 +116,6 @@ void Scatter(const HybmAggregateUrmaDemoParam &param)
     } else {
         ScatterDynamic(param, request);
     }
-    FlushScatterDestination(param, request);
     __asm__ __volatile__("dsb ish" : : : "memory");
 }
 } // namespace
