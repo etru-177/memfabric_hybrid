@@ -10,7 +10,8 @@ extern "C" __global__ __aicore__ void AggregateUrmaScatterOps(GM_ADDR dstNew, GM
                                                                uint64_t dstStride)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    AggregateUrmaScatterKernel kernel;
+    AscendC::TPipe pipe;
+    AggregateUrmaScatterKernel kernel(&pipe);
     kernel.Init(dstNew, dstBase, segmentCount, segmentBytes, dstStride);
     kernel.Process();
 }

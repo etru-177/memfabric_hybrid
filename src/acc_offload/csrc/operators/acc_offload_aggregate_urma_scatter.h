@@ -10,18 +10,9 @@
 
 #define HYBM_AICORE_KERNEL __attribute__((always_inline)) __aicore__ __inline__
 
-constexpr uint32_t AGGREGATE_SCATTER_UB_BYTES = 64U * 1024U;
-
-template<AscendC::HardEvent event>
-HYBM_AICORE_KERNEL void AggregateScatterSync(int32_t eventId)
-{
-    AscendC::SetFlag<event>(eventId);
-    AscendC::WaitFlag<event>(eventId);
-}
-
 class AggregateUrmaScatterKernel {
 public:
-    HYBM_AICORE_KERNEL AggregateUrmaScatterKernel() {}
+    HYBM_AICORE_KERNEL explicit AggregateUrmaScatterKernel(AscendC::TPipe *pipe) : pipe_(pipe) {}
 
     HYBM_AICORE_KERNEL void Init(GM_ADDR dstNew, GM_ADDR dstBase, uint32_t segmentCount, uint32_t segmentBytes,
                                  uint64_t dstStride)
@@ -33,6 +24,8 @@ public:
         destination_ = reinterpret_cast<__gm__ uint8_t *>(dstBase);
         blockIndex_ = AscendC::GetBlockIdx();
         blockCount_ = AscendC::GetBlockNum();
+        const uint32_t alignedBytes = (segmentBytes_ + 31U) & ~31U;
+        pipe_->InitBuffer(copyQueue_, 2, alignedBytes);
     }
 
     HYBM_AICORE_KERNEL void Process()
@@ -41,48 +34,42 @@ public:
         const uint32_t begin = blockIndex_ * segmentsPerBlock;
         const uint32_t candidateEnd = begin + segmentsPerBlock;
         const uint32_t end = candidateEnd < segmentCount_ ? candidateEnd : segmentCount_;
+        if (begin >= end) {
+            return;
+        }
+        CopyIn(begin);
         for (uint32_t index = begin; index < end; ++index) {
-            CopySegment(source_ + static_cast<uint64_t>(index) * segmentBytes_,
-                        destination_ + static_cast<uint64_t>(index) * dstStride_);
+            if (index + 1U < end) {
+                CopyIn(index + 1U);
+            }
+            CopyOut(index);
         }
     }
 
 private:
-    HYBM_AICORE_KERNEL void CopyGmToUb(__ubuf__ uint8_t *destination, __gm__ uint8_t *source, uint32_t bytes)
+    HYBM_AICORE_KERNEL void CopyIn(uint32_t index)
     {
-        AscendC::LocalTensor<uint8_t> local;
-        AscendC::GlobalTensor<uint8_t> global;
-        AscendC::DataCopyExtParams copyParams(1, bytes, 0, 0, 0);
-        AscendC::DataCopyPadExtParams<uint8_t> padParams{};
-        local.address_.logicPos = static_cast<uint8_t>(AscendC::TPosition::VECIN);
-        local.address_.bufferAddr = reinterpret_cast<uint64_t>(destination);
-        global.SetGlobalBuffer(source);
-        AscendC::DataCopyPad(local, global, copyParams, padParams);
+        AscendC::GlobalTensor<uint8_t> source;
+        source.SetGlobalBuffer(source_ + static_cast<uint64_t>(index) * segmentBytes_);
+        auto local = copyQueue_.AllocTensor<uint8_t>();
+        AscendC::DataCopyExtParams params{1, segmentBytes_, 0, 0, 0};
+        AscendC::DataCopyPadExtParams<uint8_t> pad{false, 0, 0, 0};
+        AscendC::DataCopyPad<uint8_t, AscendC::PaddingMode::Normal>(local, source, params, pad);
+        copyQueue_.EnQue<uint8_t>(local);
     }
 
-    HYBM_AICORE_KERNEL void CopyUbToGm(__gm__ uint8_t *destination, __ubuf__ uint8_t *source, uint32_t bytes)
+    HYBM_AICORE_KERNEL void CopyOut(uint32_t index)
     {
-        AscendC::LocalTensor<uint8_t> local;
-        AscendC::GlobalTensor<uint8_t> global;
-        AscendC::DataCopyExtParams copyParams(1, bytes, 0, 0, 0);
-        local.address_.logicPos = static_cast<uint8_t>(AscendC::TPosition::VECIN);
-        local.address_.bufferAddr = reinterpret_cast<uint64_t>(source);
-        global.SetGlobalBuffer(destination);
-        AscendC::DataCopyPad(global, local, copyParams);
+        AscendC::GlobalTensor<uint8_t> destination;
+        destination.SetGlobalBuffer(destination_ + static_cast<uint64_t>(index) * dstStride_);
+        auto local = copyQueue_.DeQue<uint8_t>();
+        AscendC::DataCopyExtParams params{1, segmentBytes_, 0, 0, 0};
+        AscendC::DataCopyPad<uint8_t, AscendC::PaddingMode::Normal>(destination, local, params);
+        copyQueue_.FreeTensor(local);
     }
 
-    HYBM_AICORE_KERNEL void CopySegment(__gm__ uint8_t *source, __gm__ uint8_t *destination)
-    {
-        for (uint32_t offset = 0U; offset < segmentBytes_; offset += AGGREGATE_SCATTER_UB_BYTES) {
-            const uint32_t remaining = segmentBytes_ - offset;
-            const uint32_t copyBytes = remaining < AGGREGATE_SCATTER_UB_BYTES ? remaining : AGGREGATE_SCATTER_UB_BYTES;
-            CopyGmToUb(nullptr, source + offset, copyBytes);
-            AggregateScatterSync<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
-            CopyUbToGm(destination + offset, nullptr, copyBytes);
-            AggregateScatterSync<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
-        }
-    }
-
+    AscendC::TPipe *pipe_;
+    AscendC::TQueBind<AscendC::QuePosition::VECIN, AscendC::QuePosition::VECOUT, 2> copyQueue_;
     __gm__ uint8_t *source_;
     __gm__ uint8_t *destination_;
     uint64_t dstStride_;
