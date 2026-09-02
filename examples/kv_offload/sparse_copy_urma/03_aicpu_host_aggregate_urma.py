@@ -273,7 +273,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
     timing_enabled = args.device_timing_every > 0
     stages = {"launch sync": []}
     if timing_enabled:
-        stages.update({"scatter": [], "AICPU e2e": []})
+        stages.update({"AICPU control": [], "AIV scatter estimate": []})
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
@@ -294,10 +294,11 @@ def run_npu(args, handle, bm, runtime_device, layout):
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
                                         bm.BmCopyType.G2H, 0) == 0
-                stages["scatter"].append(timing.scatter_ns)
-                stages["AICPU e2e"].append(timing.total_ns)
-    stage_bytes = {stage: total for stage in stages}
-    timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
+                launch_ns = launch_end - launch_begin
+                stages["AICPU control"].append(timing.total_ns)
+                stages["AIV scatter estimate"].append(max(0, launch_ns - timing.total_ns))
+    stage_bytes = {"launch sync": total, "AIV scatter estimate": total}
+    timing_samples = len(stages["AICPU control"]) if timing_enabled else 0
     print_timing_summary(
         f"Device summary: rounds={args.rounds}, timing_samples={timing_samples}, bytes/round={total}",
         stages,

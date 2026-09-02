@@ -278,6 +278,8 @@ int32_t LaunchAggregateUrmaDemoKernel(aclrtFuncHandle function, aclrtStream stre
         OFFLOAD_LOG_ERROR("launch aggregate URMA demo failed, deviceId: " << deviceId << " ret: " << ret);
         return BM_DL_FUNCTION_FAILED;
     }
+    OffloadOpsAggregateUrmaScatter(const_cast<HybmAggregateUrmaDemoMessage *>(param.message), param.dstNew,
+                                   param.dstBase, stream);
     ret = aclrtSynchronizeStream(stream);
     if (ret != ACL_SUCCESS) {
         OFFLOAD_LOG_ERROR("synchronize aggregate URMA demo failed, deviceId: " << deviceId << " ret: " << ret);

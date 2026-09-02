@@ -7,7 +7,6 @@
 
 #include <chrono>
 #include <cstddef>
-#include <cstring>
 
 #include "hybm_batch_copy_route.h"
 #include "hybm_batch_transfer.h"
@@ -17,8 +16,6 @@
 
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr uintptr_t kCacheLineBytes = 64U;
-constexpr uint32_t kScatterPrefetchDistance = 4U;
 
 uint64_t ElapsedNs(Clock::time_point begin, Clock::time_point end)
 {
@@ -34,23 +31,6 @@ void InvalidateDeviceCache(uintptr_t address)
 void FlushDeviceCache(uintptr_t address)
 {
     __asm__ __volatile__("dc cvac, %0" : : "r"(address) : "memory");
-    __asm__ __volatile__("dsb ish" : : : "memory");
-}
-
-void FlushDeviceCacheRange(uintptr_t address, uint64_t bytes)
-{
-    const uintptr_t end = address + bytes;
-    for (uintptr_t line = address & ~(kCacheLineBytes - 1U); line < end; line += kCacheLineBytes) {
-        __asm__ __volatile__("dc cvac, %0" : : "r"(line) : "memory");
-    }
-}
-
-void InvalidateDeviceCacheRange(uintptr_t address, uint64_t bytes)
-{
-    const uintptr_t end = address + bytes;
-    for (uintptr_t line = address & ~(kCacheLineBytes - 1U); line < end; line += kCacheLineBytes) {
-        __asm__ __volatile__("dc civac, %0" : : "r"(line) : "memory");
-    }
     __asm__ __volatile__("dsb ish" : : : "memory");
 }
 
@@ -91,54 +71,6 @@ void WaitForHost(const HybmAggregateUrmaDemoParam &param)
     } while (*param.ready != param.message->doorbell);
 }
 
-template <size_t Bytes>
-__attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict destination,
-                                                     const uint8_t *__restrict source)
-{
-    __builtin_memcpy(destination, source, Bytes);
-}
-
-template <size_t Bytes>
-void ScatterFixed(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
-{
-    auto *destination = param.dstBase;
-    const auto *source = param.dstNew;
-    for (uint32_t index = 0; index < request.segmentCount; ++index) {
-        if (request.segmentCount - index > kScatterPrefetchDistance) {
-            __builtin_prefetch(source + kScatterPrefetchDistance * Bytes, 0, 1);
-            __builtin_prefetch(destination + kScatterPrefetchDistance * request.dstStride, 1, 1);
-        }
-        CopyFixed<Bytes>(destination, source);
-        FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), Bytes);
-        source += Bytes;
-        destination += request.dstStride;
-    }
-}
-
-void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
-{
-    for (uint32_t index = 0; index < request.segmentCount; ++index) {
-        auto *destination = param.dstBase + index * request.dstStride;
-        std::memcpy(destination, param.dstNew + index * request.segmentBytes, request.segmentBytes);
-        FlushDeviceCacheRange(reinterpret_cast<uintptr_t>(destination), request.segmentBytes);
-    }
-}
-
-void Scatter(const HybmAggregateUrmaDemoParam &param)
-{
-    const auto &request = param.message->request;
-    InvalidateDeviceCacheRange(reinterpret_cast<uintptr_t>(param.dstNew), request.totalBytes);
-    if (request.segmentBytes == 656U) {
-        ScatterFixed<656>(param, request);
-    } else if (request.segmentBytes == 576U) {
-        ScatterFixed<576>(param, request);
-    } else if (request.segmentBytes == 1152U) {
-        ScatterFixed<1152>(param, request);
-    } else {
-        ScatterDynamic(param, request);
-    }
-    __asm__ __volatile__("dsb ish" : : : "memory");
-}
 } // namespace
 
 extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
@@ -163,12 +95,10 @@ extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
     const auto requested = Clock::now();
     WaitForHost(*param);
     const auto ready = Clock::now();
-    Scatter(*param);
-    const auto done = Clock::now();
     param->timing->requestNs = ElapsedNs(begin, requested);
     param->timing->waitHostNs = ElapsedNs(requested, ready);
-    param->timing->scatterNs = ElapsedNs(ready, done);
-    param->timing->totalNs = ElapsedNs(begin, done);
+    param->timing->scatterNs = 0U;
+    param->timing->totalNs = ElapsedNs(begin, ready);
     FlushDeviceCache(reinterpret_cast<uintptr_t>(param->timing));
     return BM_OK;
 }
