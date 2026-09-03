@@ -187,6 +187,11 @@ def timed_copy(handle, bm, source, destination, size):
     return time.perf_counter_ns() - begin
 
 
+def fill_source_pattern(source, stride, segment_count, segment_bytes, round_index):
+    for index in range(segment_count):
+        ctypes.memset(source + index * stride, (round_index + index) & 0xFF, segment_bytes)
+
+
 def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell):
     result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
@@ -219,8 +224,7 @@ def run_host(args, handle, bm, listener, layout):
     source = host_va + source_offset
     aggregate = host_va + aggregate_offset
     ctypes.memset(mailbox, 0, ctypes.sizeof(Message))
-    for index in range(args.segments):
-        ctypes.memset(source + index * stride, index & 0xFF, args.segment_bytes)
+    fill_source_pattern(source, stride, args.segments, args.segment_bytes, 0)
 
     from _pymf_acc_offload import offload
 
@@ -239,6 +243,11 @@ def run_host(args, handle, bm, listener, layout):
             stages["gather"].append(gather_ns)
             stages["URMA write"].append(write_ns)
             stages["host total"].append(work_ns + ready_ns)
+            if args.verify and round_index + 1 < args.rounds:
+                if conn.recv(1) != b"V":
+                    raise RuntimeError("device verification synchronization failed")
+                fill_source_pattern(source, stride, args.segments, args.segment_bytes, round_index + 1)
+                conn.sendall(b"P")
     stage_bytes = {name: total for name in stages}
     print_timing_summary(
         f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
@@ -264,6 +273,24 @@ def stage_device_control(handle, bm, control, hbm_gva):
     copy_to_hbm(handle, bm, ctypes.addressof(control), hbm_gva, PACKED_CONTROL_COPY_BYTES)
 
 
+def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback):
+    span = (args.segments - 1) * (2 * args.segment_bytes) + args.segment_bytes
+    assert handle.copy_data(hbm_gva + dst_base_offset, ctypes.addressof(readback), span,
+                            bm.BmCopyType.G2H, 0) == 0
+    actual = memoryview(readback).cast("B")
+    stride = 2 * args.segment_bytes
+    for index in range(args.segments):
+        begin = index * stride
+        expected = (round_index + index) & 0xFF
+        mismatch = next((offset for offset, value in enumerate(actual[begin:begin + args.segment_bytes])
+                         if value != expected), None)
+        if mismatch is not None:
+            raise RuntimeError(
+                f"scatter mismatch: round={round_index}, segment={index}, offset={mismatch}, "
+                f"expected=0x{expected:02x}, actual=0x{actual[begin + mismatch]:02x}"
+            )
+
+
 def run_npu(args, handle, bm, runtime_device, layout):
     total, stride, _, _, dst_new_offset, dst_base_offset, _ = layout
     host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
@@ -273,6 +300,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
                       args.segments, args.segment_bytes, 0)
     control, message, ready, timing = make_device_control(request)
     timing_enabled = args.device_timing_every > 0
+    scatter_span = (args.segments - 1) * stride + args.segment_bytes
+    readback = (ctypes.c_uint8 * scatter_span)() if args.verify else None
     stages = {"launch sync": []}
     if timing_enabled:
         stages.update({"scatter copy": [], "publish barrier": [], "scatter total": [], "AICPU e2e": []})
@@ -292,6 +321,12 @@ def run_npu(args, handle, bm, runtime_device, layout):
                           hbm_va + 8192, runtime_device) == 0
             launch_end = time.perf_counter_ns()
             stages["launch sync"].append(launch_end - launch_begin)
+            if args.verify:
+                verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback)
+                if round_index + 1 < args.rounds:
+                    conn.sendall(b"V")
+                    if conn.recv(1) != b"P":
+                        raise RuntimeError("host pattern preparation synchronization failed")
             timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
@@ -307,6 +342,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
         stages,
         stage_bytes,
     )
+    if args.verify:
+        print(f"Scatter verification: PASS ({args.rounds} rounds, {args.segments} segments/round)")
 
 
 def main():
@@ -323,6 +360,8 @@ def main():
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")
+    parser.add_argument("--verify", action="store_true",
+                        help="read back and verify every scatter round; excluded from launch timing")
     args = parser.parse_args()
     if args.segments <= 0 or args.segment_bytes <= 0 or args.rounds <= 0:
         parser.error("--segments, --segment-bytes and --rounds must be positive")
