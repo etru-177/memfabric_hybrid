@@ -187,9 +187,15 @@ def timed_copy(handle, bm, source, destination, size):
     return time.perf_counter_ns() - begin
 
 
-def fill_source_pattern(source, stride, segment_count, segment_bytes, round_index):
+def fill_source_pattern(source, stride, segment_count, segment_bytes):
     for index in range(segment_count):
-        ctypes.memset(source + index * stride, (round_index + index) & 0xFF, segment_bytes)
+        ctypes.memset(source + index * stride, index & 0xFF, segment_bytes)
+
+
+def fill_destination_poison(destination, stride, segment_count, segment_bytes):
+    ctypes.memset(destination, 0xA5, (segment_count - 1) * stride + segment_bytes)
+    for index in range(segment_count):
+        ctypes.memset(destination + index * stride, (index & 0xFF) ^ 0xFF, segment_bytes)
 
 
 def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell):
@@ -224,7 +230,7 @@ def run_host(args, handle, bm, listener, layout):
     source = host_va + source_offset
     aggregate = host_va + aggregate_offset
     ctypes.memset(mailbox, 0, ctypes.sizeof(Message))
-    fill_source_pattern(source, stride, args.segments, args.segment_bytes, 0)
+    fill_source_pattern(source, stride, args.segments, args.segment_bytes)
 
     from _pymf_acc_offload import offload
 
@@ -243,11 +249,6 @@ def run_host(args, handle, bm, listener, layout):
             stages["gather"].append(gather_ns)
             stages["URMA write"].append(write_ns)
             stages["host total"].append(work_ns + ready_ns)
-            if args.verify and round_index + 1 < args.rounds:
-                if conn.recv(1) != b"V":
-                    raise RuntimeError("device verification synchronization failed")
-                fill_source_pattern(source, stride, args.segments, args.segment_bytes, round_index + 1)
-                conn.sendall(b"P")
     stage_bytes = {name: total for name in stages}
     print_timing_summary(
         f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
@@ -281,7 +282,7 @@ def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, read
     stride = 2 * args.segment_bytes
     for index in range(args.segments):
         begin = index * stride
-        expected = (round_index + index) & 0xFF
+        expected = index & 0xFF
         mismatch = next((offset for offset, value in enumerate(actual[begin:begin + args.segment_bytes])
                          if value != expected), None)
         if mismatch is not None:
@@ -302,6 +303,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
     timing_enabled = args.device_timing_every > 0
     scatter_span = (args.segments - 1) * stride + args.segment_bytes
     readback = (ctypes.c_uint8 * scatter_span)() if args.verify else None
+    poison = (ctypes.c_uint8 * scatter_span)() if args.verify else None
     stages = {"launch sync": []}
     if timing_enabled:
         stages.update({"scatter copy": [], "publish barrier": [], "scatter total": [], "AICPU e2e": []})
@@ -313,6 +315,9 @@ def run_npu(args, handle, bm, runtime_device, layout):
         launch.argtypes = [ctypes.c_uint64] * 5 + [ctypes.c_uint16]
         launch.restype = ctypes.c_int32
         for round_index in range(args.rounds):
+            if args.verify:
+                fill_destination_poison(ctypes.addressof(poison), stride, args.segments, args.segment_bytes)
+                copy_to_hbm(handle, bm, ctypes.addressof(poison), hbm_gva + dst_base_offset, scatter_span)
             message.doorbell = round_index + 1
             ready.value = 0
             stage_device_control(handle, bm, control, hbm_gva)
@@ -323,10 +328,6 @@ def run_npu(args, handle, bm, runtime_device, layout):
             stages["launch sync"].append(launch_end - launch_begin)
             if args.verify:
                 verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback)
-                if round_index + 1 < args.rounds:
-                    conn.sendall(b"V")
-                    if conn.recv(1) != b"P":
-                        raise RuntimeError("host pattern preparation synchronization failed")
             timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
