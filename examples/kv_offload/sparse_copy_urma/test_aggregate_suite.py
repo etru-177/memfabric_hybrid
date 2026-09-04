@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+# MemFabric_Hybrid is licensed under Mulan PSL v2.
+
+import contextlib
+import ctypes
+import importlib
+import io
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+demo = importlib.import_module("03_aicpu_host_aggregate_urma")
+
+
+class AggregateSuiteTest(unittest.TestCase):
+    def test_default_matrix(self):
+        with patch("sys.argv", ["demo"]):
+            args = demo.parse_args()
+        self.assertEqual(args.rounds, 1000)
+        self.assertEqual(args.segments, sorted({b * m for b in (100, 200, 300, 400)
+                                              for m in (1, 2, 4, 8, 16, 32, 64)}))
+        self.assertEqual(args.segments[-1], 25600)
+
+    def test_worker_failure(self):
+        process = Mock(exitcode=2)
+        process.name = "device"
+        process.is_alive.return_value = True
+        with self.assertRaisesRegex(RuntimeError, "device exited with code 2"):
+            demo.wait_workers([process], 1)
+
+    def test_worker_timeout(self):
+        process = Mock(exitcode=None)
+        process.is_alive.return_value = True
+        with patch.object(demo.time, "monotonic", side_effect=[0, 2]):
+            with self.assertRaises(TimeoutError):
+                demo.wait_workers([process], 1)
+
+    def test_summary_and_deduplication(self):
+        with patch("sys.argv", ["demo", "--segments", "100", "100", "200", "--segment-bytes", "656"]):
+            args = demo.parse_args()
+        values = {"launch sync": 100000, "host total": 50000, "gather": 20000, "URMA write": 30000}
+        with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
+            with patch.object(demo, "run_case", return_value=values) as run, contextlib.redirect_stdout(io.StringIO()) as out:
+                demo.run_suite(args)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("100.000", out.getvalue())
+        self.assertIn("50.000", out.getvalue())
+
+    def test_poison_and_readback(self):
+        args = Mock(segments=2, segment_bytes=4)
+        source = (ctypes.c_uint8 * 12)()
+        readback = (ctypes.c_uint8 * 12)()
+        demo.fill_destination_poison(ctypes.addressof(source), 8, 2, 4)
+        bm = Mock()
+        handle = Mock()
+
+        def copy(src, dst, size, *unused):
+            ctypes.memmove(dst, src, size)
+            return 0
+
+        handle.copy_data.side_effect = copy
+        with self.assertRaisesRegex(RuntimeError, "scatter mismatch"):
+            demo.verify_scatter(handle, bm, ctypes.addressof(source), 0, args, 0, readback)
+        demo.fill_source_pattern(ctypes.addressof(source), 8, 2, 4)
+        demo.verify_scatter(handle, bm, ctypes.addressof(source), 0, args, 0, readback)
+
+
+if __name__ == "__main__":
+    unittest.main()

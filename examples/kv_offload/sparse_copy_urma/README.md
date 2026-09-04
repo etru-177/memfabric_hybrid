@@ -164,7 +164,35 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
 ```
 
 Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
-该程序没有数据校验、超时、重试或异常清理，只用于上板穿刺。
+手动双端模式可在 Device 加 `--verify`，用 G2H 逐字节校验有效 segment。
+
+### 单入口批量测试（推荐）
+
+配置好本目录 `env` 并加载 MemFabric 环境后，只运行：
+
+```bash
+python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py
+```
+
+- 默认包大小：576、656、1152、8192 B。
+- 默认包数量：`(100, 200, 300, 400) × (1, 2, 4, 8, 16, 32, 64)`，乘积去重并升序测试。
+- 每组默认 1000 轮；不剔除首轮。
+- 每组用 spawn 启动 Host/Device 两个独立进程，避免 fork 已初始化的 NPU runtime。
+- 自动选择本机端口，每组完成后回收子进程；一端失败或超过 600 秒时停止该组并回收另一端。
+- Host/Device 详细日志及均值 JSON 保存在输出的 `mf_aggregate_suite_*` 临时目录。
+- 最终表格只包含包大小、包数量、总 MiB、平均 E2E/host total/gather/write/scatter 时延及 E2E 带宽。
+  时延为每轮平均值，不是 1000 轮累加值。E2E 为同步算子接口的 `launch sync`，
+  不包含初始化、控制结构 H2G、timing G2H 和可选校验；这些额外操作仍可能改变 cache 状态。
+
+只测 656B 或自定义矩阵：
+
+```bash
+python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py --segment-bytes 656
+python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
+  --segment-bytes 576 656 --segments 100 3200 --rounds 1000
+```
+
+加 `--verify` 开启校验；加 `--case-timeout 1800` 扩大每组（含初始化和校验）的超时。
 
 ### memcpy microbenchmark
 

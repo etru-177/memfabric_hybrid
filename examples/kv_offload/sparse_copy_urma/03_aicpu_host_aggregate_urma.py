@@ -5,9 +5,12 @@
 
 import argparse
 import ctypes
+import json
 import math
+import multiprocessing
 import os
 import socket
+import tempfile
 import time
 
 from urma_example_common import (
@@ -23,6 +26,8 @@ from urma_example_common import (
 
 CONTROL_BYTES = 3 * 4096
 POOL_ALIGN = 2 << 20
+DEFAULT_COUNTS = sorted({base * scale for base in (100, 200, 300, 400) for scale in (1, 2, 4, 8, 16, 32, 64)})
+DEFAULT_SIZES = (576, 656, 1152, 8192)
 
 
 class Request(ctypes.Structure):
@@ -249,6 +254,10 @@ def run_host(args, handle, bm, listener, layout):
             stages["gather"].append(gather_ns)
             stages["URMA write"].append(write_ns)
             stages["host total"].append(work_ns + ready_ns)
+        if conn.recv(1) != b"D":
+            raise RuntimeError("device exited before finishing all rounds")
+    if getattr(args, "result_file", None):
+        return stages
     stage_bytes = {name: total for name in stages}
     print_timing_summary(
         f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
@@ -336,6 +345,9 @@ def run_npu(args, handle, bm, runtime_device, layout):
                 stages["publish barrier"].append(timing.scatter_publish_ns)
                 stages["scatter total"].append(timing.scatter_ns)
                 stages["AICPU e2e"].append(timing.total_ns)
+        conn.sendall(b"D")
+    if getattr(args, "result_file", None):
+        return stages
     stage_bytes = {"launch sync": total, "scatter copy": total, "scatter total": total, "AICPU e2e": total}
     timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
     print_timing_summary(
@@ -347,16 +359,18 @@ def run_npu(args, handle, bm, runtime_device, layout):
         print(f"Scatter verification: PASS ({args.rounds} rounds, {args.segments} segments/round)")
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="AICPU initiated Host aggregate URMA demo")
-    parser.add_argument("--role", required=True, choices=("host", "device"))
-    parser.add_argument("--head-ip", required=True)
+    parser.add_argument("--role", choices=("host", "device"), help=argparse.SUPPRESS)
+    parser.add_argument("--head-ip", default="127.0.0.1", help=argparse.SUPPRESS)
     parser.add_argument("--env-file", default=DEFAULT_ENV_FILE)
-    parser.add_argument("--store-port", type=int, default=STORE_PORT)
-    parser.add_argument("--ctrl-port", type=int, default=9878)
-    parser.add_argument("--segments", type=int, default=4096)
-    parser.add_argument("--segment-bytes", type=int, default=2048)
-    parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--store-port", type=int, default=STORE_PORT, help=argparse.SUPPRESS)
+    parser.add_argument("--ctrl-port", type=int, default=9878, help=argparse.SUPPRESS)
+    parser.add_argument("--segments", type=int, nargs="+", default=DEFAULT_COUNTS)
+    parser.add_argument("--segment-bytes", type=int, nargs="+", default=DEFAULT_SIZES)
+    parser.add_argument("--rounds", type=int, default=1000)
+    parser.add_argument("--case-timeout", type=float, default=600,
+                        help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-timing-every", type=int, default=1,
@@ -364,18 +378,22 @@ def main():
     parser.add_argument("--verify", action="store_true",
                         help="read back and verify every scatter round; excluded from launch timing")
     args = parser.parse_args()
-    if args.segments <= 0 or args.segment_bytes <= 0 or args.rounds <= 0:
+    if min(args.segments) <= 0 or min(args.segment_bytes) <= 0 or args.rounds <= 0:
         parser.error("--segments, --segment-bytes and --rounds must be positive")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
     if args.device_timing_every < 0:
         parser.error("--device-timing-every must be non-negative")
+    if not math.isfinite(args.case_timeout) or args.case_timeout <= 0:
+        parser.error("--case-timeout must be finite and positive")
+    if args.role and (len(args.segments) != 1 or len(args.segment_bytes) != 1):
+        parser.error("manual --role requires one --segments and one --segment-bytes value")
+    return args
 
+
+def run_role(args):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
-    try:
-        runtime_device = configure(args.role, args.env_file, args.host_cpus)
-    except HostAffinityError as error:
-        parser.error(f"invalid Host CPU affinity: {error}")
+    runtime_device = configure(args.role, args.env_file, args.host_cpus)
     layout = make_layout(args.segments, args.segment_bytes)
     listener = None
     if rank == HOST_RANK:
@@ -386,14 +404,111 @@ def main():
     assert mf.initialize() == 0
     handle = create_handle(args, bm, rank, runtime_device, layout[-1])
     if rank == HOST_RANK:
-        run_host(args, handle, bm, listener, layout)
+        stages = run_host(args, handle, bm, listener, layout)
         listener.close()
     else:
-        run_npu(args, handle, bm, runtime_device, layout)
+        stages = run_npu(args, handle, bm, runtime_device, layout)
     handle.leave()
     handle.destroy()
     bm.uninitialize(0)
     mf.uninitialize()
+    if getattr(args, "result_file", None):
+        with open(args.result_file, "w", encoding="utf-8") as output:
+            json.dump({name: sum(samples) / len(samples) for name, samples in stages.items()}, output)
+
+
+def case_worker(args, log_path):
+    # Fresh interpreter: never fork an initialized Torch/NPU runtime.
+    with open(log_path, "w", buffering=1, encoding="utf-8") as log:
+        os.dup2(log.fileno(), 1)
+        os.dup2(log.fileno(), 2)
+        run_role(args)
+
+
+def wait_workers(processes, timeout):
+    deadline = time.monotonic() + timeout
+    while any(process.is_alive() for process in processes):
+        for process in processes:
+            if process.exitcode not in (None, 0):
+                raise RuntimeError(f"{process.name} exited with code {process.exitcode}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"case exceeded {timeout:g} seconds")
+        time.sleep(0.1)
+    for process in processes:
+        process.join()
+        if process.exitcode != 0:
+            raise RuntimeError(f"{process.name} exited with code {process.exitcode}")
+
+
+def run_case(args, size, count, directory):
+    context = multiprocessing.get_context("spawn")
+    processes = []
+    # Keep both port reservations open until distinct ports have been selected.
+    with socket.create_server(("127.0.0.1", 0)) as store, socket.create_server(("127.0.0.1", 0)) as ctrl:
+        ports = store.getsockname()[1], ctrl.getsockname()[1]
+    try:
+        for role in ("host", "device"):
+            worker = argparse.Namespace(**vars(args))
+            worker.role, worker.segment_bytes, worker.segments = role, size, count
+            worker.head_ip = "127.0.0.1"
+            worker.store_port, worker.ctrl_port = ports
+            worker.result_file = os.path.join(directory, f"{role}.json")
+            process = context.Process(target=case_worker, args=(worker, os.path.join(directory, f"{role}.log")),
+                                      name=role)
+            process.start()
+            processes.append(process)
+        wait_workers(processes, args.case_timeout)
+        results = {}
+        for role in ("host", "device"):
+            with open(os.path.join(directory, f"{role}.json"), encoding="utf-8") as result:
+                results.update(json.load(result))
+        return results
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+
+
+def run_suite(args):
+    directory = tempfile.mkdtemp(prefix="mf_aggregate_suite_")
+    rows = []
+    sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
+    print(f"rounds/case={args.rounds}, cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
+    try:
+        for size in sizes:
+            for count in counts:
+                case_dir = os.path.join(directory, f"{size}B_{count}")
+                os.mkdir(case_dir)
+                print(f"Testing {size}B x {count} ...", flush=True)
+                try:
+                    result = run_case(args, size, count, case_dir)
+                except Exception as error:
+                    raise RuntimeError(f"case {size}B x {count} failed; inspect {case_dir}: {error}") from error
+                rows.append((size, count, f"{size * count / (1024 ** 2):.3f}",
+                             *(f"{result[name] / 1000:.3f}" for name in
+                               ("launch sync", "host total", "gather", "URMA write")),
+                             f"{result['scatter total'] / 1000:.3f}" if "scatter total" in result else "-",
+                             f"{size * count * 1e9 / result['launch sync'] / (1024 ** 3):.3f}"))
+    finally:
+        if rows:
+            print_table("Aggregate copy summary (per-round means; E2E = launch sync)",
+                        ("bytes/pkt", "packets", "MiB", "E2E(us)", "host(us)", "gather(us)",
+                         "write(us)", "scatter(us)", "E2E GiB/s"), rows)
+        print(f"Full Host/Device logs and mean timings: {directory}", flush=True)
+
+
+def main():
+    args = parse_args()
+    if args.role:
+        args.segments, args.segment_bytes = args.segments[0], args.segment_bytes[0]
+        run_role(args)
+    else:
+        run_suite(args)
 
 
 if __name__ == "__main__":
