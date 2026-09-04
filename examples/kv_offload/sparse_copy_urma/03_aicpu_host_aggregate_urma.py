@@ -12,6 +12,7 @@ import os
 import socket
 import tempfile
 import time
+import traceback
 
 from urma_example_common import (
     DEFAULT_ENV_FILE,
@@ -391,12 +392,11 @@ def parse_args():
     return args
 
 
-def run_role(args):
+def run_role(args, listener=None):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
     runtime_device = configure(args.role, args.env_file, args.host_cpus)
     layout = make_layout(args.segments, args.segment_bytes)
-    listener = None
-    if rank == HOST_RANK:
+    if rank == HOST_RANK and listener is None:
         listener = socket.create_server(("0.0.0.0", args.ctrl_port))
     import memfabric_hybrid as mf
     from memfabric_hybrid import bm
@@ -417,12 +417,20 @@ def run_role(args):
             json.dump({name: sum(samples) / len(samples) for name, samples in stages.items()}, output)
 
 
-def case_worker(args, log_path):
+def case_worker(args, log_path, listener=None):
     # Fresh interpreter: never fork an initialized Torch/NPU runtime.
     with open(log_path, "w", buffering=1, encoding="utf-8") as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
-        run_role(args)
+        try:
+            run_role(args, listener)
+        except BaseException:
+            traceback.print_exc(file=log)
+            log.flush()
+            raise
+        finally:
+            if listener is not None:
+                listener.close()
 
 
 def wait_workers(processes, timeout):
@@ -443,17 +451,23 @@ def wait_workers(processes, timeout):
 def run_case(args, size, count, directory):
     context = multiprocessing.get_context("spawn")
     processes = []
-    # Keep both port reservations open until distinct ports have been selected.
-    with socket.create_server(("127.0.0.1", 0)) as store, socket.create_server(("127.0.0.1", 0)) as ctrl:
-        ports = store.getsockname()[1], ctrl.getsockname()[1]
+    # Pass the LIVE listener through spawn; the Host never rebinds this port.
+    # Use the same wildcard bind scope as the manual Host path.
+    ctrl = socket.create_server(("0.0.0.0", 0))
     try:
+        # BM currently accepts a port, not an existing listening socket.
+        # Unlike the control socket, its bind cannot be transferred here.
+        with socket.create_server(("0.0.0.0", 0)) as store:
+            ports = store.getsockname()[1], ctrl.getsockname()[1]
         for role in ("host", "device"):
             worker = argparse.Namespace(**vars(args))
             worker.role, worker.segment_bytes, worker.segments = role, size, count
             worker.head_ip = "127.0.0.1"
             worker.store_port, worker.ctrl_port = ports
             worker.result_file = os.path.join(directory, f"{role}.json")
-            process = context.Process(target=case_worker, args=(worker, os.path.join(directory, f"{role}.log")),
+            process = context.Process(target=case_worker,
+                                      args=(worker, os.path.join(directory, f"{role}.log"),
+                                            ctrl if role == "host" else None),
                                       name=role)
             process.start()
             processes.append(process)
@@ -464,6 +478,7 @@ def run_case(args, size, count, directory):
                 results.update(json.load(result))
         return results
     finally:
+        ctrl.close()
         for process in processes:
             if process.is_alive():
                 process.terminate()
@@ -472,6 +487,19 @@ def run_case(args, size, count, directory):
             if process.is_alive():
                 process.kill()
                 process.join(timeout=5)
+
+
+def print_case_errors(directory):
+    for role in ("host", "device"):
+        path = os.path.join(directory, f"{role}.log")
+        print(f"--- {path} (last 8 KiB) ---", flush=True)
+        try:
+            with open(path, "rb") as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - 8192))
+                print(log.read().decode("utf-8", errors="replace"), flush=True)
+        except OSError as error:
+            print(f"Cannot read log: {error}", flush=True)
 
 
 def run_suite(args):
@@ -488,6 +516,7 @@ def run_suite(args):
                 try:
                     result = run_case(args, size, count, case_dir)
                 except Exception as error:
+                    print_case_errors(case_dir)
                     raise RuntimeError(f"case {size}B x {count} failed; inspect {case_dir}: {error}") from error
                 rows.append((size, count, f"{size * count / (1024 ** 2):.3f}",
                              *(f"{result[name] / 1000:.3f}" for name in

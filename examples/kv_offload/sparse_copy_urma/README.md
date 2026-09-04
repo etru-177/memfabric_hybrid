@@ -179,6 +179,9 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py
 - 每组默认 1000 轮；不剔除首轮。
 - 每组用 spawn 启动 Host/Device 两个独立进程，避免 fork 已初始化的 NPU runtime。
 - 自动选择本机端口，每组完成后回收子进程；一端失败或超过 600 秒时停止该组并回收另一端。
+- 控制端口保持监听并通过 spawn 传给 Host，不再释放后重新绑定；BM store 仅接受端口号，
+  暂时仍需探测后释放端口，存在被其他程序抢占的小窗口。
+- 失败时直接打印两端日志末尾，避免只看到子进程 exit code。
 - Host/Device 详细日志及均值 JSON 保存在输出的 `mf_aggregate_suite_*` 临时目录。
 - 最终表格只包含包大小、包数量、总 MiB、平均 E2E/host total/gather/write/scatter 时延及 E2E 带宽。
   时延为每轮平均值，不是 1000 轮累加值。E2E 为同步算子接口的 `launch sync`，

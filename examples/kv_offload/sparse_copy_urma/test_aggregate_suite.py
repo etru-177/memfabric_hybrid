@@ -6,6 +6,8 @@ import contextlib
 import ctypes
 import importlib
 import io
+import multiprocessing
+import socket
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -13,7 +15,36 @@ from unittest.mock import Mock, patch
 demo = importlib.import_module("03_aicpu_host_aggregate_urma")
 
 
+def accept_transferred_listener(listener):
+    listener.settimeout(5)
+    with listener, listener.accept()[0] as conn:
+        conn.sendall(b"ready")
+
+
 class AggregateSuiteTest(unittest.TestCase):
+    def test_live_listener_survives_spawn(self):
+        listener = socket.create_server(("0.0.0.0", 0))
+        port = listener.getsockname()[1]
+        child = multiprocessing.get_context("spawn").Process(target=accept_transferred_listener, args=(listener,))
+        try:
+            child.start()
+            listener.close()
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+                self.assertEqual(conn.recv(5), b"ready")
+            child.join(timeout=5)
+            self.assertEqual(child.exitcode, 0)
+        finally:
+            listener.close()
+            if child.is_alive():
+                child.terminate()
+                child.join(timeout=5)
+
+    def test_error_log_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                demo.print_case_errors(directory)
+            self.assertIn("Cannot read log", output.getvalue())
+
     def test_default_matrix(self):
         with patch("sys.argv", ["demo"]):
             args = demo.parse_args()
