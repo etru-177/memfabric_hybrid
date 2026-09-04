@@ -22,6 +22,27 @@ def accept_transferred_listener(listener):
 
 
 class AggregateSuiteTest(unittest.TestCase):
+    def test_direct_addresses(self):
+        layout = demo.make_layout(3200, 656)
+        src, dst, lengths = demo.direct_copy_lists(0x10000000, 0x20000000, layout, 3200, 656)
+        self.assertEqual(src[0], 0x10000000 + layout[2])
+        self.assertEqual(dst[0], 0x20000000 + layout[5])
+        self.assertEqual(src[-1] - src[0], 3199 * 1312)
+        self.assertEqual(dst[-1] - dst[0], 3199 * 1312)
+        self.assertEqual(lengths, [656] * 3200)
+        self.assertLessEqual(dst[-1] + 656, 0x20000000 + layout[-1])
+
+    def test_direct_summary_without_host_metrics(self):
+        with patch("sys.argv", ["demo", "--mode", "direct", "--segments", "100", "--segment-bytes", "656"]):
+            args = demo.parse_args()
+        with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
+            with patch.object(demo, "run_case", return_value={"launch sync": 100000}):
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    demo.run_suite(args)
+        self.assertIn("direct copy summary", out.getvalue())
+        self.assertIn("100.000", out.getvalue())
+        self.assertIn("verify=OFF", out.getvalue())
+
     def test_live_listener_survives_spawn(self):
         listener = socket.create_server(("0.0.0.0", 0))
         port = listener.getsockname()[1]

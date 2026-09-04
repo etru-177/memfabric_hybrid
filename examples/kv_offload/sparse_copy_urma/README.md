@@ -1,5 +1,30 @@
 # sparse_copy_urma examples
 
+## 03：aggregate / direct E2E 对照
+
+单入口仍默认 `--mode aggregate`、1000 轮。新增 `--mode direct`，复用生产
+`HybmBatchCopy`：从 Host 离散 GVA 直接 batch read 到最终离散 HBM VA，
+不经过 Host gather、聚合区 write 和 AICPU scatter。Host 初始化源后保持注册内存和连接存活，
+直到 Device 完成所有轮次。两个模式使用相同包大小、数量、两倍包大小的地址 stride 和校验方式。
+
+先执行带校验的小规模验证，再比较完整 1000 轮：
+
+```bash
+python3 03_aicpu_host_aggregate_urma.py --mode direct --segment-bytes 656 --segments 100 3200 25600 --rounds 3 --verify
+python3 03_aicpu_host_aggregate_urma.py --mode aggregate --segment-bytes 656 --segments 100 3200 25600
+python3 03_aicpu_host_aggregate_urma.py --mode direct --segment-bytes 656 --segments 100 3200 25600
+```
+
+E2E 均为同步 C 接口调用的提交到完成时间，包含 launch 和 stream synchronize，
+不包含进程初始化、输入准备、地址列表创建/H2D、目的区 poison 和结果 G2H 校验。
+direct 地址列表在测试前一次创建并同步；aggregate 控制消息也在每轮计时前准备。
+因此这是固定布局下的算子接口 E2E，不是包含动态请求准备的应用 E2E。
+direct 表中的 Host/gather/write/scatter 为 `-`，不伪造为零；`--device-timing-every`
+仅对 aggregate 生效。`--verify` 每轮 poison 后回读检查有效包，源模式固定，
+不证明跨轮更新的可见性，也不检查地址空洞。不开启校验时汇总明确标记 `verify=OFF`。
+
+direct 会增加小包 URMA 描述符数量，不保证比 aggregate 更快；以相同参数实测为准。
+
 01/02 共用生产 `HybmBatchCopy`、固定 route 和
 `mf_acc_offload.sparse_copy_urma`，不调用 `offload.initialize()`。建链使用
 `bm.BmDataOpType.HOST_DEVICE_URMA`；route 首次发布后不增加内存区间、不替换 peer，调用方保证 entity

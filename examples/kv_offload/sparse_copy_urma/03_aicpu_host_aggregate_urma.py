@@ -271,6 +271,68 @@ def copy_to_hbm(handle, bm, source, destination, size):
     assert handle.copy_data(source, destination, size, bm.BmCopyType.H2G, 0) == 0
 
 
+def run_direct_host(args, handle, bm, listener, layout):
+    _, stride, source_offset, _, _, _, _ = layout
+    host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
+    host_va = handle.gva_to_va(host_gva, bm.BmMemType.LOCAL_HOST)
+    fill_source_pattern(host_va + source_offset, stride, args.segments, args.segment_bytes)
+    with listener.accept()[0] as conn:
+        conn.sendall(b"R")
+        if conn.recv(1) != b"D":
+            raise RuntimeError("direct device exited before finishing all rounds")
+    return {}
+
+
+def direct_copy_lists(host_gva, hbm_va, layout, count, size):
+    _, stride, source_offset, _, _, dst_offset, _ = layout
+    # Source is a routed GVA; destination is the local device VA, not its GVA.
+    return ([host_gva + source_offset + index * stride for index in range(count)],
+            [hbm_va + dst_offset + index * stride for index in range(count)], [size] * count)
+
+
+def run_direct_npu(args, handle, bm, runtime_device, layout):
+    import torch
+
+    total, stride, _, _, _, dst_offset, _ = layout
+    host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
+    hbm_gva = handle.peer_rank_ptr(NPU_RANK, bm.BmMemType.DEVICE)
+    hbm_va = handle.gva_to_va(hbm_gva, bm.BmMemType.LOCAL_DEVICE)
+    lists = direct_copy_lists(host_gva, hbm_va, layout, args.segments, args.segment_bytes)
+    tensors = [torch.tensor(values, dtype=torch.int64, device=f"npu:{runtime_device}") for values in lists]
+    torch.npu.synchronize()
+    library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
+                                      "libmf_hybm_accoffload.so"))
+    launch = library.AccOffloadSparseCopyUrma
+    launch.argtypes = [ctypes.c_uint64] * 3 + [ctypes.c_uint32, ctypes.c_uint16]
+    launch.restype = ctypes.c_int32
+    pointers = [tensor.data_ptr() for tensor in tensors]
+    span = (args.segments - 1) * stride + args.segment_bytes
+    readback = (ctypes.c_uint8 * span)() if args.verify else None
+    poison = (ctypes.c_uint8 * span)() if args.verify else None
+    stages = {"launch sync": []}
+    with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
+        if conn.recv(1) != b"R":
+            raise RuntimeError("direct host did not publish source readiness")
+        for round_index in range(args.rounds):
+            if args.verify:
+                fill_destination_poison(ctypes.addressof(poison), stride, args.segments, args.segment_bytes)
+                copy_to_hbm(handle, bm, ctypes.addressof(poison), hbm_gva + dst_offset, span)
+            begin = time.perf_counter_ns()
+            ret = launch(*pointers, args.segments, runtime_device)
+            elapsed = time.perf_counter_ns() - begin
+            if ret != 0:
+                raise RuntimeError(f"direct batch read failed: round={round_index}, ret={ret}")
+            stages["launch sync"].append(elapsed)
+            if args.verify:
+                verify_scatter(handle, bm, hbm_gva, dst_offset, args, round_index, readback)
+        conn.sendall(b"D")
+    if not getattr(args, "result_file", None):
+        print_timing_summary("Direct batch read", stages, {"launch sync": total})
+        if args.verify:
+            print(f"Direct verification: PASS ({args.rounds} rounds)")
+    return stages
+
+
 def make_device_control(request):
     storage = (ctypes.c_uint8 * CONTROL_STORAGE_BYTES)()
     message = Message.from_buffer(storage, 0)
@@ -362,6 +424,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="AICPU initiated Host aggregate URMA demo")
+    parser.add_argument("--mode", choices=("aggregate", "direct"), default="aggregate",
+                        help="aggregate via Host, or direct AICPU batch read into final HBM")
     parser.add_argument("--role", choices=("host", "device"), help=argparse.SUPPRESS)
     parser.add_argument("--head-ip", default="127.0.0.1", help=argparse.SUPPRESS)
     parser.add_argument("--env-file", default=DEFAULT_ENV_FILE)
@@ -404,10 +468,12 @@ def run_role(args, listener=None):
     assert mf.initialize() == 0
     handle = create_handle(args, bm, rank, runtime_device, layout[-1])
     if rank == HOST_RANK:
-        stages = run_host(args, handle, bm, listener, layout)
+        host_runner = run_direct_host if args.mode == "direct" else run_host
+        stages = host_runner(args, handle, bm, listener, layout)
         listener.close()
     else:
-        stages = run_npu(args, handle, bm, runtime_device, layout)
+        device_runner = run_direct_npu if args.mode == "direct" else run_npu
+        stages = device_runner(args, handle, bm, runtime_device, layout)
     handle.leave()
     handle.destroy()
     bm.uninitialize(0)
@@ -519,13 +585,14 @@ def run_suite(args):
                     print_case_errors(case_dir)
                     raise RuntimeError(f"case {size}B x {count} failed; inspect {case_dir}: {error}") from error
                 rows.append((size, count, f"{size * count / (1024 ** 2):.3f}",
-                             *(f"{result[name] / 1000:.3f}" for name in
+                             *(f"{result[name] / 1000:.3f}" if name in result else "-" for name in
                                ("launch sync", "host total", "gather", "URMA write")),
                              f"{result['scatter total'] / 1000:.3f}" if "scatter total" in result else "-",
                              f"{size * count * 1e9 / result['launch sync'] / (1024 ** 3):.3f}"))
     finally:
         if rows:
-            print_table("Aggregate copy summary (per-round means; E2E = launch sync)",
+            print_table(f"{args.mode} copy summary (per-round means; E2E = launch sync; "
+                        f"verify={'PASS' if args.verify else 'OFF'})",
                         ("bytes/pkt", "packets", "MiB", "E2E(us)", "host(us)", "gather(us)",
                          "write(us)", "scatter(us)", "E2E GiB/s"), rows)
         print(f"Full Host/Device logs and mean timings: {directory}", flush=True)
