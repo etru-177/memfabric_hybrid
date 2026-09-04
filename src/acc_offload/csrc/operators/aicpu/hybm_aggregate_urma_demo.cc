@@ -38,9 +38,15 @@ void FlushDeviceCache(uintptr_t address)
 
 const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRouteTable *route, uint64_t mailbox)
 {
+    uintptr_t previousLine = 0U;
     for (uint16_t index = 0; index < route->header.rangeCount; ++index) {
         const auto *range = &route->ranges[index];
-        InvalidateDeviceCache(reinterpret_cast<uintptr_t>(range));
+        // Adjacent 32B range entries share one 64B cache line. Do not evict it twice.
+        const uintptr_t line = reinterpret_cast<uintptr_t>(range) & ~uintptr_t{63U};
+        if (line != previousLine) {
+            InvalidateDeviceCache(line);
+            previousLine = line;
+        }
         if (mailbox >= range->srcGvaBegin && mailbox + sizeof(HybmAggregateUrmaDemoMessage) <= range->srcGvaEnd) {
             return range;
         }

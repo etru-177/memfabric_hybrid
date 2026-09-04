@@ -50,7 +50,19 @@ void InvalidateDeviceCache(uintptr_t address)
 void FlushDeviceCache(uintptr_t address)
 {
     __asm__ __volatile__("dc cvac, %0" :: "r"(address) : "memory");
-    __asm__ __volatile__("dsb ish" :::"memory");
+    // Caller batches all cleans before a single DeviceMemoryBarrier().
+}
+
+void InvalidateRangeWithoutBarrier(uintptr_t address, size_t bytes)
+{
+    constexpr uintptr_t lineBytes = 64U;
+    if (bytes == 0U) {
+        return;
+    }
+    const uintptr_t last = (address + bytes - 1U) & ~(lineBytes - 1U);
+    for (uintptr_t line = address & ~(lineBytes - 1U); line <= last; line += lineBytes) {
+        __asm__ __volatile__("dc civac, %0" :: "r"(line) : "memory");
+    }
 }
 
 void DeviceMemoryBarrier()
@@ -100,7 +112,6 @@ int32_t ValidateRoutePeers(const BatchCopyRouteTable *route)
 {
     for (uint16_t peerIndex = 0U; peerIndex < route->header.peerCount; ++peerIndex) {
         const auto &peer = route->peers[peerIndex];
-        InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&peer));
         if (peer.thread == 0U || peer.channel == 0U || peer.remoteFlagAddr == 0U) {
             HYBM_LOGE(BM_NOT_CONNECTED,
                       "invalid BatchCopy peer, peerIndex=%u thread=%lu channel=%lu remoteFlagAddr=0x%lx", peerIndex,
@@ -137,7 +148,6 @@ int32_t ValidateRouteRanges(const BatchCopyRouteTable *route)
     uint64_t previousEnd = 0U;
     for (uint16_t index = 0U; index < route->header.rangeCount; ++index) {
         const auto &range = route->ranges[index];
-        InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&range));
         const auto ret = ValidateRouteRange(range, route->header.peerCount, index, rangeCounts);
         if (ret != BM_OK) {
             return ret;
@@ -153,32 +163,18 @@ int32_t ValidateRouteRanges(const BatchCopyRouteTable *route)
     return BM_OK;
 }
 
-void LogRouteTableForDebug(const BatchCopyRouteTable *route)
-{
-    HYBM_LOGE(BM_OK, "BatchCopy route debug, magic=0x%x peerCount=%u rangeCount=%u", route->header.magic,
-              route->header.peerCount, route->header.rangeCount);
-    for (uint16_t index = 0U; index < route->header.peerCount; ++index) {
-        const auto &peer = route->peers[index];
-        InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&peer));
-        HYBM_LOGE(BM_OK, "BatchCopy route peer, index=%u thread=%lu channel=%lu remoteFlagAddr=0x%lx", index,
-                  peer.thread, peer.channel, peer.remoteFlagAddr);
-    }
-    for (uint16_t index = 0U; index < route->header.rangeCount; ++index) {
-        const auto &range = route->ranges[index];
-        InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&range));
-        HYBM_LOGE(BM_OK,
-                  "BatchCopy route range, index=%u srcGvaBegin=0x%lx srcGvaEnd=0x%lx hcommVaBegin=0x%lx peerIndex=%u",
-                  index, range.srcGvaBegin, range.srcGvaEnd, range.hcommVaBegin, range.peerIndex);
-    }
-}
-
 int32_t ValidatePublishedRoute(const BatchCopyRouteTable *route)
 {
     auto ret = ValidateRouteHeader(route);
     if (ret != BM_OK) {
         return ret;
     }
-    LogRouteTableForDebug(route);
+    // Header counts have been bounded above. Each 64B line contains two entries.
+    InvalidateRangeWithoutBarrier(reinterpret_cast<uintptr_t>(route->peers),
+                                  route->header.peerCount * sizeof(route->peers[0]));
+    InvalidateRangeWithoutBarrier(reinterpret_cast<uintptr_t>(route->ranges),
+                                  route->header.rangeCount * sizeof(route->ranges[0]));
+    DeviceMemoryBarrier();
     ret = ValidateRoutePeers(route);
     if (ret != BM_OK) {
         return ret;
@@ -288,7 +284,18 @@ void ClearUsedCompletionCells(const BatchCopyRoundState &roundCounts, uint16_t p
         }
         auto *cell = GetCompletionCell(peerIndex);
         *cell = 0U;
-        FlushDeviceCache(reinterpret_cast<uintptr_t>(cell));
+    }
+    // Finish all stores first: eight peer cells share a cache line.
+    uintptr_t previousLine = 0U;
+    for (uint16_t peerIndex = 0U; peerIndex < peerCount; ++peerIndex) {
+        if (roundCounts[peerIndex] == 0U) {
+            continue;
+        }
+        const uintptr_t line = reinterpret_cast<uintptr_t>(GetCompletionCell(peerIndex)) & ~uintptr_t{63U};
+        if (line != previousLine) {
+            FlushDeviceCache(line);
+            previousLine = line;
+        }
     }
     DeviceMemoryBarrier();
 }
@@ -327,12 +334,23 @@ int32_t SubmitPeerGroups(const BatchCopyRouteTable *route, BatchCopyGroups &grou
 
 bool AllUsedPeersCompleted(const BatchCopyRoundState &roundCounts, uint16_t peerCount)
 {
+    uintptr_t previousLine = 0U;
+    for (uint16_t peerIndex = 0U; peerIndex < peerCount; ++peerIndex) {
+        if (roundCounts[peerIndex] == 0U) {
+            continue;
+        }
+        const uintptr_t line = reinterpret_cast<uintptr_t>(GetCompletionCell(peerIndex)) & ~uintptr_t{63U};
+        if (line != previousLine) {
+            InvalidateRangeWithoutBarrier(line, 64U);
+            previousLine = line;
+        }
+    }
+    DeviceMemoryBarrier();
     for (uint16_t peerIndex = 0U; peerIndex < peerCount; ++peerIndex) {
         if (roundCounts[peerIndex] == 0U) {
             continue;
         }
         auto *cell = GetCompletionCell(peerIndex);
-        InvalidateDeviceCache(reinterpret_cast<uintptr_t>(cell));
         if (*cell == 0U) {
             return false;
         }
