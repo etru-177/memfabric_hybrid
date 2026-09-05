@@ -156,8 +156,7 @@ def configure(role, env_file, host_cpu_list=None, force_host_nic_plugin=False):
     load_env(env_file)
     if role == "host":
         configure_host_affinity(host_cpu_list)
-        if force_host_nic_plugin:
-            os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"] = "1"
+        os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"] = "1" if force_host_nic_plugin else "0"
     physical = os.environ["MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID"]
     visible = [item.strip() for item in os.environ["ASCEND_RT_VISIBLE_DEVICES"].split(",")]
     runtime_device = visible.index(physical)
@@ -440,8 +439,12 @@ def parse_args():
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
-    parser.add_argument("--force-host-nic-plugin", action="store_true",
-                        help="force the Host process to load the HCOMM NIC plugin when an NPU is visible")
+    plugin_group = parser.add_mutually_exclusive_group()
+    plugin_group.add_argument("--force-host-nic-plugin", dest="force_host_nic_plugin", action="store_true",
+                              help=argparse.SUPPRESS)
+    plugin_group.add_argument("--no-host-nic-plugin", dest="force_host_nic_plugin", action="store_false",
+                              help="use the built-in Host URMA path instead of forcing the HCOMM NIC plugin")
+    parser.set_defaults(force_host_nic_plugin=True)
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")
     parser.add_argument("--verify", action="store_true",

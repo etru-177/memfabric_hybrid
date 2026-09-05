@@ -73,6 +73,11 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertEqual(args.segments, sorted({b * m for b in (100, 200, 300, 400)
                                               for m in (1, 2, 4, 8, 16, 32, 64)}))
         self.assertEqual(args.segments[-1], 25600)
+        self.assertTrue(args.force_host_nic_plugin)
+
+    def test_host_plugin_can_be_disabled(self):
+        with patch("sys.argv", ["demo", "--no-host-nic-plugin"]):
+            args = demo.parse_args()
         self.assertFalse(args.force_host_nic_plugin)
 
     def test_force_plugin_environment_is_host_only(self):
@@ -83,6 +88,15 @@ class AggregateSuiteTest(unittest.TestCase):
                 with patch.dict("sys.modules", {"torch": torch}):
                     demo.configure("host", "unused", force_host_nic_plugin=True)
                 self.assertEqual(demo.os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"], "1")
+
+    def test_disabled_plugin_overrides_inherited_environment(self):
+        with patch.object(demo, "load_env"), patch.object(demo, "configure_host_affinity"):
+            environment = {"MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID": "0", "ASCEND_RT_VISIBLE_DEVICES": "0",
+                           "HCOMM_NIC_PLUGIN_FORCE_LOAD": "1"}
+            with patch.dict(demo.os.environ, environment, clear=True):
+                with patch.dict("sys.modules", {"torch": Mock()}):
+                    demo.configure("host", "unused", force_host_nic_plugin=False)
+                self.assertEqual(demo.os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"], "0")
 
     def test_worker_failure(self):
         process = Mock(exitcode=2)
