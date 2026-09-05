@@ -152,10 +152,12 @@ def load_env(path):
             os.environ[name] = value.strip().strip("'\"")
 
 
-def configure(role, env_file, host_cpu_list=None):
+def configure(role, env_file, host_cpu_list=None, force_host_nic_plugin=False):
     load_env(env_file)
     if role == "host":
         configure_host_affinity(host_cpu_list)
+        if force_host_nic_plugin:
+            os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"] = "1"
     physical = os.environ["MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID"]
     visible = [item.strip() for item in os.environ["ASCEND_RT_VISIBLE_DEVICES"].split(",")]
     runtime_device = visible.index(physical)
@@ -438,6 +440,8 @@ def parse_args():
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
+    parser.add_argument("--force-host-nic-plugin", action="store_true",
+                        help="force the Host process to load the HCOMM NIC plugin when an NPU is visible")
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")
     parser.add_argument("--verify", action="store_true",
@@ -458,7 +462,7 @@ def parse_args():
 
 def run_role(args, listener=None):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
-    runtime_device = configure(args.role, args.env_file, args.host_cpus)
+    runtime_device = configure(args.role, args.env_file, args.host_cpus, args.force_host_nic_plugin)
     layout = make_layout(args.segments, args.segment_bytes)
     if rank == HOST_RANK and listener is None:
         listener = socket.create_server(("0.0.0.0", args.ctrl_port))

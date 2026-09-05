@@ -25,6 +25,15 @@ direct 表中的 Host/gather/write/scatter 为 `-`，不伪造为零；`--device
 
 direct 会增加小包 URMA 描述符数量，不保证比 aggregate 更快；以相同参数实测为准。
 
+如果 HCOMM 包含 experimental NIC plugin，而 Host 进程因为可见 NPU 默认跳过插件加载，可在任一模式增加：
+
+```bash
+--force-host-nic-plugin
+```
+
+该参数只在 Host 子进程导入 MemFabric/HCOMM 前设置 `HCOMM_NIC_PLUGIN_FORCE_LOAD=1`；Device 子进程不会由
+demo 设置该变量。是否确实选中 plugin 应以 Host 日志中的 `[NicPlugin] protocol[...] is handled` 为准。
+
 01/02 共用生产 `HybmBatchCopy`、固定 route 和
 `mf_acc_offload.sparse_copy_urma`，不调用 `offload.initialize()`。建链使用
 `bm.BmDataOpType.HOST_DEVICE_URMA`；route 首次发布后不增加内存区间、不替换 peer，调用方保证 entity
