@@ -25,6 +25,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
@@ -84,7 +88,24 @@ void PinGatherWorker(int cpu)
 template <size_t Bytes>
 __attribute__((always_inline)) inline void CopyFixed(uint8_t *__restrict dst, const uint8_t *__restrict src)
 {
+#if defined(__aarch64__)
+    size_t offset = 0;
+    for (; offset + 64U <= Bytes; offset += 64U) {
+        const uint8x16_t value0 = vld1q_u8(src + offset);
+        const uint8x16_t value1 = vld1q_u8(src + offset + 16U);
+        const uint8x16_t value2 = vld1q_u8(src + offset + 32U);
+        const uint8x16_t value3 = vld1q_u8(src + offset + 48U);
+        vst1q_u8(dst + offset, value0);
+        vst1q_u8(dst + offset + 16U, value1);
+        vst1q_u8(dst + offset + 32U, value2);
+        vst1q_u8(dst + offset + 48U, value3);
+    }
+    if (offset < Bytes) {
+        __builtin_memcpy(dst + offset, src + offset, Bytes - offset);
+    }
+#else
     __builtin_memcpy(dst, src, Bytes);
+#endif
 }
 
 template <size_t Bytes>
@@ -206,13 +227,6 @@ public:
 private:
     void WaitForWork(uint64_t observedGeneration)
     {
-        for (uint32_t spin = 0; spin < WORKER_SPIN_COUNT; ++spin) {
-            if (stopping_.load(std::memory_order_acquire) ||
-                generation_.load(std::memory_order_acquire) != observedGeneration) {
-                return;
-            }
-            CpuRelax();
-        }
         std::unique_lock<std::mutex> lock(idleMutex_);
         idleCv_.wait(lock, [this, observedGeneration]() {
             return stopping_.load(std::memory_order_acquire) ||
