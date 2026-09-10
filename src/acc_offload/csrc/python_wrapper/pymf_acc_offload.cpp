@@ -206,13 +206,13 @@ public:
 private:
     void WaitForWork(uint64_t observedGeneration)
     {
-        // for (uint32_t spin = 0; spin < WORKER_SPIN_COUNT; ++spin) {
-        //     if (stopping_.load(std::memory_order_acquire) ||
-        //         generation_.load(std::memory_order_acquire) != observedGeneration) {
-        //         return;
-        //     }
-        //     CpuRelax();
-        // }
+        for (uint32_t spin = 0; spin < WORKER_SPIN_COUNT; ++spin) {
+            if (stopping_.load(std::memory_order_acquire) ||
+                generation_.load(std::memory_order_acquire) != observedGeneration) {
+                return;
+            }
+            CpuRelax();
+        }
         std::unique_lock<std::mutex> lock(idleMutex_);
         idleCv_.wait(lock, [this, observedGeneration]() {
             return stopping_.load(std::memory_order_acquire) ||
