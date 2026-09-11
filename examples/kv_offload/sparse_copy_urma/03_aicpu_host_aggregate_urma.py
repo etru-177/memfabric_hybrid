@@ -29,6 +29,7 @@ CONTROL_BYTES = 3 * 4096
 POOL_ALIGN = 2 << 20
 DEFAULT_COUNTS = sorted({base * scale for base in (100, 200, 300, 400) for scale in (1, 2, 4, 8, 16, 32, 64)})
 DEFAULT_SIZES = (576, 656, 1152, 8192)
+DEFAULT_PIPELINE_MIB = 1
 
 
 class Request(ctypes.Structure):
@@ -129,14 +130,15 @@ def print_timing_summary(title, stage_samples, stage_bytes):
     print_table(title, ("stage", "avg(us)", "min(us)", "max(us)", "P95(us)", "P99(us)", "GiB/s"), rows)
 
 
-def make_layout(count, segment_bytes):
+def make_layout(count, segment_bytes, pipeline_bytes=DEFAULT_PIPELINE_MIB << 20):
     total = count * segment_bytes
     stride = 2 * segment_bytes
     source = 4096
     aggregate = align_up(source + count * stride, 4096)
     dst_new = CONTROL_BYTES
     dst_base = align_up(dst_new + total, 4096)
-    pool_bytes = align_up(max(aggregate + total, dst_base + count * stride), POOL_ALIGN)
+    aggregate_bytes = total if pipeline_bytes == 0 else min(total, pipeline_bytes) * 2
+    pool_bytes = align_up(max(aggregate + aggregate_bytes, dst_base + count * stride), POOL_ALIGN)
     return total, stride, source, aggregate, dst_new, dst_base, pool_bytes
 
 
@@ -205,6 +207,38 @@ def fill_destination_poison(destination, stride, segment_count, segment_bytes):
         ctypes.memset(destination + index * stride, (index & 0xFF) ^ 0xFF, segment_bytes)
 
 
+def gather_write_pipeline(args, handle, bm, offload, source, aggregate, destination, stride):
+    pipeline_bytes = args.pipeline_mib << 20
+    segments_per_chunk = args.segments if pipeline_bytes == 0 else max(1, pipeline_bytes // args.segment_bytes)
+    buffer_bytes = segments_per_chunk * args.segment_bytes
+    gather_ns = 0
+    write_ns = 0
+    pending = 0
+    for begin in range(0, args.segments, segments_per_chunk):
+        if pending == 2:
+            fence_begin = time.perf_counter_ns()
+            assert handle.synchronize() == 0
+            write_ns += time.perf_counter_ns() - fence_begin
+            pending = 0
+        count = min(segments_per_chunk, args.segments - begin)
+        slot = pending
+        gather_ns += offload.aggregate_gather_range_demo(
+            source + begin * stride, aggregate + slot * buffer_bytes, stride,
+            count, args.segment_bytes, args.gather_threads
+        )
+        submit_begin = time.perf_counter_ns()
+        assert handle.copy_data_nbi(aggregate + slot * buffer_bytes,
+                                    destination + begin * args.segment_bytes,
+                                    count * args.segment_bytes, bm.BmCopyType.H2G) == 0
+        write_ns += time.perf_counter_ns() - submit_begin
+        pending += 1
+    if pending:
+        fence_begin = time.perf_counter_ns()
+        assert handle.synchronize() == 0
+        write_ns += time.perf_counter_ns() - fence_begin
+    return gather_ns, write_ns
+
+
 def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell):
     result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
@@ -215,10 +249,9 @@ def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expect
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
     work_begin = time.perf_counter_ns()
-    gather_ns = offload.aggregate_gather_range_demo(
-        source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads
+    gather_ns, write_ns = gather_write_pipeline(
+        args, handle, bm, offload, source, aggregate, dst_new_gva, src_stride
     )
-    write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
     work_ns = time.perf_counter_ns() - work_begin
     return ready_gva, total_bytes, gather_ns, write_ns, work_ns
 
@@ -262,7 +295,8 @@ def run_host(args, handle, bm, listener, layout):
         return stages
     stage_bytes = {name: total for name in stages}
     print_timing_summary(
-        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
+        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, "
+        f"pipeline_mib={args.pipeline_mib}, bytes/round={total}",
         stages,
         stage_bytes,
     )
@@ -438,6 +472,8 @@ def parse_args():
     parser.add_argument("--case-timeout", type=float, default=600,
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
+    parser.add_argument("--pipeline-mib", type=int, default=DEFAULT_PIPELINE_MIB,
+                        help="double-buffer gather/write chunk size in MiB; 0 disables pipelining")
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     plugin_group = parser.add_mutually_exclusive_group()
     plugin_group.add_argument("--force-host-nic-plugin", dest="force_host_nic_plugin", action="store_true",
@@ -454,6 +490,8 @@ def parse_args():
         parser.error("--segments, --segment-bytes and --rounds must be positive")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
+    if not 0 <= args.pipeline_mib <= 64:
+        parser.error("--pipeline-mib must be in [0, 64]")
     if args.device_timing_every < 0:
         parser.error("--device-timing-every must be non-negative")
     if not math.isfinite(args.case_timeout) or args.case_timeout <= 0:
@@ -466,7 +504,7 @@ def parse_args():
 def run_role(args, listener=None):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
     runtime_device = configure(args.role, args.env_file, args.host_cpus, args.force_host_nic_plugin)
-    layout = make_layout(args.segments, args.segment_bytes)
+    layout = make_layout(args.segments, args.segment_bytes, args.pipeline_mib << 20)
     if rank == HOST_RANK and listener is None:
         listener = socket.create_server(("0.0.0.0", args.ctrl_port))
     import memfabric_hybrid as mf

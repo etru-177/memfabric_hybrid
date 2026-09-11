@@ -14,6 +14,7 @@
 #define MEMFABRIC_HYBRID_HYBM_COMPOSE_DATA_OP_H
 
 #include <cstdint>
+#include <mutex>
 #include <vector>
 #include "hybm_entity_tag_info.h"
 #include "hybm_data_operator.h"
@@ -60,6 +61,8 @@ private:
     DataOperatorPtr devUrmaDataOperator_;
     DataOperatorPtr hostRdmaDataOperator_;
     DataOperatorPtr hostDeviceUrmaDataOperator_;
+    std::mutex pendingAsyncMutex_;
+    std::vector<DataOperatorPtr> pendingAsyncDataOperators_;
 };
 } // namespace mf
 } // namespace ock

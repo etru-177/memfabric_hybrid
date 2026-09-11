@@ -74,6 +74,24 @@ class AggregateSuiteTest(unittest.TestCase):
                                               for m in (1, 2, 4, 8, 16, 32, 64)}))
         self.assertEqual(args.segments[-1], 25600)
         self.assertTrue(args.force_host_nic_plugin)
+        self.assertEqual(args.pipeline_mib, 1)
+
+    def test_pipeline_uses_two_buffers_and_nbi_write(self):
+        args = Mock(segments=3200, segment_bytes=656, gather_threads=16, pipeline_mib=1)
+        handle = Mock()
+        handle.copy_data_nbi.return_value = 0
+        handle.synchronize.return_value = 0
+        offload = Mock()
+        offload.aggregate_gather_range_demo.return_value = 100
+        bm = Mock()
+
+        gather_ns, _ = demo.gather_write_pipeline(args, handle, bm, offload, 0x100000, 0x800000,
+                                                   0x900000, 1312)
+
+        self.assertEqual(offload.aggregate_gather_range_demo.call_count, 3)
+        self.assertEqual(handle.copy_data_nbi.call_count, 3)
+        self.assertEqual(handle.synchronize.call_count, 2)
+        self.assertEqual(gather_ns, 300)
 
     def test_host_plugin_can_be_disabled(self):
         with patch("sys.argv", ["demo", "--no-host-nic-plugin"]):
@@ -117,7 +135,8 @@ class AggregateSuiteTest(unittest.TestCase):
             args = demo.parse_args()
         values = {"launch sync": 100000, "host total": 50000, "gather": 20000, "URMA write": 30000}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
-            with patch.object(demo, "run_case", return_value=values) as run, contextlib.redirect_stdout(io.StringIO()) as out:
+            with patch.object(demo, "run_case", return_value=values) as run, \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
                 demo.run_suite(args)
         self.assertEqual(run.call_count, 2)
         self.assertIn("100.000", out.getvalue())

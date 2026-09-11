@@ -189,6 +189,11 @@ public:
         return smem_bm_copy(handle_, &params, type, flags);
     }
 
+    int32_t CopyDataNbi(uint64_t src, uint64_t dest, uint64_t size, smem_bm_copy_type type)
+    {
+        return CopyData(src, dest, size, type, ASYNC_COPY_FLAG, 0);
+    }
+
     int32_t CopyDataBatch(std::vector<uintptr_t> srcs, std::vector<uintptr_t> dsts, std::vector<size_t> sizes,
                           uint32_t count, smem_bm_copy_type type, uint32_t flags, uint64_t stream)
     {
@@ -841,6 +846,11 @@ Arguments:
     stream(int): acl rt stream, default 0
 Returns:
     0 if successful)")
+        .def("copy_data_nbi", &BigMemory::CopyDataNbi, py::call_guard<py::gil_scoped_release>(), py::arg("src_ptr"),
+             py::arg("dst_ptr"), py::arg("size"), py::arg("type"), R"(
+Submit a non-blocking copy. The source must already be registered. Call synchronize() before reusing it.)")
+        .def("synchronize", &BigMemory::Wait, py::call_guard<py::gil_scoped_release>(), R"(
+Wait for all non-blocking copies submitted by this handle.)")
         .def("copy_data_batch", &BigMemory::CopyDataBatch, py::call_guard<py::gil_scoped_release>(),
              py::arg("src_addrs"), py::arg("dst_addrs"), py::arg("sizes"), py::arg("count"), py::arg("type"),
              py::arg("flags") = 0, py::arg("stream") = 0, R"(cop data with batch.)")

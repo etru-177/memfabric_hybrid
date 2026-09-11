@@ -451,17 +451,24 @@ TEST_F(HybmDataOpHostRdmaTest, data_copy_unsupported_direction)
 
 TEST_F(HybmDataOpHostRdmaTest, data_copy_async)
 {
-    // 测试异步数据拷贝
     auto ret = dataOp_->Initialize();
     ASSERT_EQ(BM_OK, ret);
 
     hybm_copy_params params{};
+    params.src = reinterpret_cast<void *>(0x100000);
+    params.dest = reinterpret_cast<void *>(0x200000);
+    params.dataSize = 4096;
     ock::mf::ExtOptions options{};
     options.srcRankId = rankId_;
     options.destRankId = rankId_ + 1UL;
+    transportManagerMock_->queryHasRegisteredResult = true;
 
     ret = dataOp_->DataCopyAsync(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST, options);
-    ASSERT_EQ(BM_ERROR, ret);
+    ASSERT_EQ(BM_OK, ret);
+    ASSERT_EQ(1UL, transportManagerMock_->writeRemoteAsyncCount);
+    ret = dataOp_->Wait(0);
+    ASSERT_EQ(BM_OK, ret);
+    ASSERT_EQ(1UL, transportManagerMock_->synchronizeCount);
 }
 
 TEST_F(HybmDataOpHostRdmaTest, wait)

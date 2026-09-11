@@ -12,7 +12,9 @@
 #ifndef MF_HYBRID_HYBM_DATA_OP_HOST_RDMA_H
 #define MF_HYBRID_HYBM_DATA_OP_HOST_RDMA_H
 
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "hybm_data_operator.h"
 #include "hybm_mem_segment.h"
 #include "hybm_transport_manager.h"
@@ -47,6 +49,7 @@ private:
     Result CopyGva2Device(const void *srcVA, void *destVA, uint64_t length, const ExtOptions &options);
     Result CopyGva2Gva(const void *srcVA, void *destVA, uint64_t length, const ExtOptions &options);
     Result SafePut(const void *srcVA, void *destVA, uint64_t length, const ExtOptions &options, bool isLocalHost);
+    Result SafePutAsync(const void *srcVA, void *destVA, uint64_t length, const ExtOptions &options);
     Result SafeGet(const void *srcVA, void *destVA, uint64_t length, const ExtOptions &options, bool isLocalHost);
     Result BatchCopyLH2LH(void *gvaAddrs[], void *hostAddrs[], const uint64_t counts[], uint32_t batchSize) noexcept;
     Result BatchCopyLD2LH(void *hostAddrs[], void *deviceAddrs[], const uint64_t counts[], uint32_t batchSize,
@@ -89,6 +92,8 @@ private:
     uint64_t rdmaSwapSpaceSize_{0};
     transport::TransManagerPtr transportManager_;
     std::shared_ptr<RbtreeRangePool> rdmaSwapMemoryAllocator_;
+    std::mutex pendingMutex_;
+    std::unordered_set<uint32_t> pendingRanks_;
 };
 } // namespace mf
 } // namespace ock
