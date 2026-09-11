@@ -29,7 +29,7 @@ CONTROL_BYTES = 3 * 4096
 POOL_ALIGN = 2 << 20
 DEFAULT_COUNTS = sorted({base * scale for base in (100, 200, 300, 400) for scale in (1, 2, 4, 8, 16, 32, 64)})
 DEFAULT_SIZES = (576, 656, 1152, 8192)
-DEFAULT_PIPELINE_MIB = 1
+DEFAULT_PIPELINE_MIB = 0
 
 
 class Request(ctypes.Structure):
