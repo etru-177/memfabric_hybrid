@@ -91,6 +91,21 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertEqual(offload.aggregate_gather_range_demo.call_count, 3)
         self.assertEqual(handle.copy_data_nbi.call_count, 3)
         self.assertEqual(handle.synchronize.call_count, 2)
+
+    def test_pipeline_disabled_uses_synchronous_copy(self):
+        args = Mock(segments=3200, segment_bytes=656, gather_threads=16, pipeline_mib=0)
+        handle.copy_data.return_value = 0
+        offload = Mock()
+        offload.aggregate_wait_demo.return_value = (
+            0x200000, 0x300000, 3200 * 656, 2 * 656, 3200, 656, 0)
+        offload.aggregate_gather_range_demo.return_value = 123
+
+        _, _, gather_ns, _, _ = demo.run_host_round(
+            args, handle, Mock(BmCopyType=Mock(H2G=1)), offload, 0x1000, 0x4000, 0x8000, 1)
+
+        self.assertEqual(gather_ns, 123)
+        handle.copy_data.assert_called_once()
+        handle.copy_data_nbi.assert_not_called()
         self.assertEqual(gather_ns, 300)
 
     def test_host_plugin_can_be_disabled(self):
