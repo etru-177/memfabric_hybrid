@@ -15,6 +15,7 @@
 #include "dl_acl_api.h"
 #include "dl_hal_api.h"
 #include "host_hcom_common.h"
+#include "hybm_data_op.h"
 #include "hybm_data_op_host_shm.h"
 #include "hybm_data_op_host_rdma.h"
 #include "hybm_dev_legacy_segment.h"
@@ -808,8 +809,11 @@ int32_t MemEntityDefault::CopyData(hybm_copy_params &params, hybm_data_copy_dire
     options.srcRankId = p2pInfo.first;
     options.destRankId = p2pInfo.second;
 
-    ret = (flags & ASYNC_COPY_FLAG) != 0U ? dataOperator_->DataCopyAsync(params, direction, options)
-                                         : dataOperator_->DataCopy(params, direction, options);
+    if ((flags & ASYNC_COPY_FLAG) != 0U) {
+        ret = dataOperator_->DataCopyAsync(params, direction, options);
+    } else {
+        ret = dataOperator_->DataCopy(params, direction, options);
+    }
     if (ret != BM_OK) {
         BM_LOG_ERROR("failed to copy data ret:" << ret << ", src:" << VaToStr(params.src)
                                                 << ", dest:" << VaToStr(params.dest) << ", size:" << params.dataSize);
