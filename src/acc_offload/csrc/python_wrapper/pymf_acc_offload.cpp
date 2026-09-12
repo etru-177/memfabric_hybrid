@@ -160,6 +160,9 @@ public:
         if (!cpus.empty() && cpus.size() < threadCount_) {
             throw std::invalid_argument("gatherThreads exceeds CPUs allowed by process affinity");
         }
+        if (!cpus.empty()) {
+            PinGatherWorker(cpus[0]);
+        }
         for (uint32_t index = 1; index < threadCount_; ++index) {
             const int cpu = index < cpus.size() ? cpus[index] : -1;
             workers_.emplace_back(&GatherThreadPool::WorkerLoop, this, index, cpu);

@@ -74,7 +74,7 @@ class AggregateSuiteTest(unittest.TestCase):
                                               for m in (1, 2, 4, 8, 16, 32, 64)}))
         self.assertEqual(args.segments[-1], 25600)
         self.assertTrue(args.force_host_nic_plugin)
-        self.assertEqual(args.pipeline_mib, 0)
+        self.assertEqual(args.pipeline_mib, 1)
 
     def test_pipeline_uses_two_buffers_and_nbi_write(self):
         args = Mock(segments=3200, segment_bytes=656, gather_threads=16, pipeline_mib=1)
