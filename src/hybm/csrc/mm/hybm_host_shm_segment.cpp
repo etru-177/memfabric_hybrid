@@ -87,6 +87,22 @@ bool HasAvailableHugePages() noexcept
     BM_LOG_WARN("Unable to parse HugePages_Free from /proc/meminfo, will fallback to /dev/shm");
     return false;
 }
+
+void AdviseTransparentHugePages(void *address, uint64_t size, uint32_t rankId) noexcept
+{
+#ifdef MADV_HUGEPAGE
+    if (madvise(address, size, MADV_HUGEPAGE) != 0) {
+        BM_LOG_WARN("MADV_HUGEPAGE failed, rankId:" << rankId << " addr:" << address << " size:" << size
+                                                    << " error:" << errno << " " << SafeStrError(errno));
+        return;
+    }
+    BM_LOG_INFO("MADV_HUGEPAGE enabled, rankId:" << rankId << " addr:" << address << " size:" << size);
+#else
+    (void)address;
+    (void)size;
+    (void)rankId;
+#endif
+}
 } // namespace
 
 HybmHostShmSegment::~HybmHostShmSegment()
@@ -452,8 +468,11 @@ Result HybmHostShmSegment::MapLocalShm() noexcept
         return BM_ERROR;
     }
     BM_LOG_INFO("Local shm file truncated: " << shmPath << " size=" << options_.size);
-    void *mapped = mmap(localVirtualBase_, options_.size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED | MAP_POPULATE,
-                        localShmFd_, 0);
+    int mmapFlags = MAP_FIXED | MAP_SHARED;
+    if (useHugetlbfs_) {
+        mmapFlags |= MAP_POPULATE;
+    }
+    void *mapped = mmap(localVirtualBase_, options_.size, PROT_READ | PROT_WRITE, mmapFlags, localShmFd_, 0);
     if (mapped == MAP_FAILED || mapped != localVirtualBase_) {
         BM_LOG_ERROR("Failed to mmap local shm file " << shmPath << " addr:" << localVirtualBase_
                                                       << " size:" << options_.size << " ret:" << mapped
@@ -462,6 +481,9 @@ Result HybmHostShmSegment::MapLocalShm() noexcept
         localShmFd_ = -1;
         (void)unlink(shmPath.c_str());
         return BM_ERROR;
+    }
+    if (!useHugetlbfs_) {
+        AdviseTransparentHugePages(mapped, options_.size, options_.rankId);
     }
     BM_LOG_INFO("MapLocalShm success: rankId=" << options_.rankId << " addr=" << localVirtualBase_
                                                << " size=" << options_.size << " useHugetlbfs=" << useHugetlbfs_
