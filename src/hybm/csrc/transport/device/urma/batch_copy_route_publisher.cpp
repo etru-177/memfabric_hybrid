@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
+#include <new>
 
 #include "batch_copy_route_publisher.h"
 #include "dl_acl_api.h"
@@ -138,25 +140,33 @@ Result BatchCopyRoutePublisher::ValidateSources(const std::vector<BatchCopyRoute
         BM_LOG_ERROR("invalid BatchCopy peer count: " << sources.size() << " userDeviceId: " << userDeviceId_);
         return BM_INVALID_PARAM;
     }
-    SourceRangeArray ranges{};
+    auto ranges = std::unique_ptr<SourceRangeArray>(new (std::nothrow) SourceRangeArray{});
+    if (ranges == nullptr) {
+        BM_LOG_ERROR("allocate BatchCopy source ranges failed, userDeviceId: " << userDeviceId_
+                                                                                << " rangeCapacity: "
+                                                                                << BATCH_COPY_MAX_RANGE_COUNT);
+        return BM_ERROR;
+    }
     size_t rangeCount = 0U;
     for (size_t peerIndex = 0U; peerIndex < sources.size(); ++peerIndex) {
         auto ret = ValidatePeer(sources, peerIndex);
         if (ret != BM_OK) {
             return ret;
         }
-        ret = CollectRanges(sources[peerIndex], ranges, rangeCount);
+        ret = CollectRanges(sources[peerIndex], *ranges, rangeCount);
         if (ret != BM_OK) {
             return ret;
         }
     }
-    return ValidateSortedRanges(ranges, rangeCount);
+    return ValidateSortedRanges(*ranges, rangeCount);
 }
 
 void BatchCopyRoutePublisher::BuildRouteImage(const std::vector<BatchCopyRouteSource> &sources,
                                               BatchCopyRouteTable &table) const
 {
-    table = BatchCopyRouteTable{};
+    table.header = BatchCopyRouteHeader{};
+    std::fill_n(table.peers, BATCH_COPY_MAX_PEER_COUNT, BatchCopyPeerEntry{});
+    std::fill_n(table.ranges, BATCH_COPY_MAX_RANGE_COUNT, BatchCopyRangeEntry{});
     size_t rangeIndex = 0U;
     for (size_t peerIndex = 0U; peerIndex < sources.size(); ++peerIndex) {
         const auto &source = sources[peerIndex];
@@ -256,14 +266,20 @@ Result BatchCopyRoutePublisher::PublishRouteImage(const std::vector<BatchCopyRou
         BM_LOG_ERROR("RegisterCompletionArea failed: " << ret);
         return ret;
     }
-    BatchCopyRouteTable table{};
-    BuildRouteImage(sources, table);
-    ret = WriteRouteImage(table);
+    auto table = std::unique_ptr<BatchCopyRouteTable>(new (std::nothrow) BatchCopyRouteTable{});
+    if (table == nullptr) {
+        BM_LOG_ERROR("allocate BatchCopy route image failed, userDeviceId: " << userDeviceId_
+                                                                              << " imageSize: "
+                                                                              << sizeof(BatchCopyRouteTable));
+        return BM_ERROR;
+    }
+    BuildRouteImage(sources, *table);
+    ret = WriteRouteImage(*table);
     if (ret != BM_OK) {
         BM_LOG_ERROR("WriteRouteImage failed: " << ret);
         return ret;
     }
-    LogRouteTable(userDeviceId_, table);
+    LogRouteTable(userDeviceId_, *table);
     return PublishMagic();
 }
 
