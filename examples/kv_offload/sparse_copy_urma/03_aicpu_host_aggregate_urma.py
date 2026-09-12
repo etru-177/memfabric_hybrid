@@ -249,15 +249,9 @@ def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expect
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
     work_begin = time.perf_counter_ns()
-    if args.pipeline_mib == 0:
-        gather_ns = offload.aggregate_gather_range_demo(
-            source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads
-        )
-        write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
-    else:
-        gather_ns, write_ns = gather_write_pipeline(
-            args, handle, bm, offload, source, aggregate, dst_new_gva, src_stride
-        )
+    gather_ns, write_ns = gather_write_pipeline(
+        args, handle, bm, offload, source, aggregate, dst_new_gva, src_stride
+    )
     work_ns = time.perf_counter_ns() - work_begin
     return ready_gva, total_bytes, gather_ns, write_ns, work_ns
 
