@@ -340,7 +340,6 @@ public:
     ock::mf::Result DataCopyAsync(hybm_copy_params &, hybm_data_copy_direction,
                                   const ock::mf::ExtOptions &) noexcept override
     {
-        dataCopyAsyncCalled = true;
         return BM_OK;
     }
     ock::mf::Result Wait(int32_t) noexcept override
@@ -354,7 +353,6 @@ public:
     }
     bool cleaned{false};
     bool dataCopyCalled{false};
-    bool dataCopyAsyncCalled{false};
     bool batchDataCopyCalled{false};
     ock::mf::ExtOptions lastDataCopyOptions{};
     ock::mf::ExtOptions lastBatchCopyOptions{};
@@ -836,27 +834,6 @@ TEST_F(HybmEntityDefaultTest, CopyData_DataCopyFail_ReturnErrorCode)
 
     auto ret = entity.CopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_HOST, nullptr, 0);
     EXPECT_EQ(ret, BM_ERROR);
-}
-
-TEST_F(HybmEntityDefaultTest, CopyData_AsyncFlag_UsesDataCopyAsync)
-{
-    ock::mf::MemEntityDefault entity(TEST_DEVICE_ID_COPY);
-    entity.initialized_ = true;
-    entity.options_.rankId = TEST_RANK_0;
-    entity.options_.scene = HYBM_SCENE_TRANS;
-    MOCKER_CPP(&ock::mf::MemEntityDefault::SetThreadAclDevice, int32_t(*)(ock::mf::MemEntityDefault *))
-        .stubs()
-        .will(returnValue(static_cast<int32_t>(BM_OK)));
-    auto dataOperator = std::make_shared<FakeDataOperator>();
-    entity.dataOperator_ = dataOperator;
-    hybm_copy_params params{reinterpret_cast<void *>(TEST_ADDR_SRC), reinterpret_cast<void *>(TEST_ADDR_DST),
-                            TEST_DATA_SIZE};
-
-    const auto ret = entity.CopyData(params, HYBM_LOCAL_HOST_TO_GLOBAL_DEVICE, nullptr, ASYNC_COPY_FLAG);
-
-    EXPECT_EQ(ret, BM_OK);
-    EXPECT_TRUE(dataOperator->dataCopyAsyncCalled);
-    EXPECT_FALSE(dataOperator->dataCopyCalled);
 }
 
 TEST_F(HybmEntityDefaultTest, CopyData_NonTransScene_UseLocalRankForAddrOutOfGvmRange)

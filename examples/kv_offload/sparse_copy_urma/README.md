@@ -201,11 +201,6 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
 Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
 手动双端模式可在 Device 加 `--verify`，用 G2H 逐字节校验有效 segment。
 
-Host 默认使用 `--pipeline-mib 1`：两个预注册聚合窗口轮转，gather 当前 chunk 时允许前一 chunk 的
-`copy_data_nbi` 在 HCOMM channel 上传输，复用窗口前通过 `synchronize()` fence。传 `--pipeline-mib 0`
-可退回整轮单次提交基线。多线程模式会把协调线程固定到 `--host-cpus` 中的一个 CPU，其余 CPU 供
-worker 使用。
-
 ### 单入口批量测试（推荐）
 
 配置好本目录 `env` 并加载 MemFabric 环境后，只运行：

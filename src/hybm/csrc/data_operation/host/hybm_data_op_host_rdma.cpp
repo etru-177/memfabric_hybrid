@@ -83,9 +83,6 @@ void HostDataOpRDMA::UnInitialize() noexcept
     if (!inited_) {
         return;
     }
-    if (auto ret = Wait(0); ret != BM_OK) {
-        BM_LOG_ERROR("Failed to synchronize pending Host async writes during uninitialize, ret: " << ret);
-    }
     if (transportManager_ != nullptr && rdmaSwapBaseAddr_ != nullptr) {
         transportManager_->UnregisterMemoryRegion(reinterpret_cast<uint64_t>(rdmaSwapBaseAddr_));
     }
@@ -187,51 +184,13 @@ Result HostDataOpRDMA::DataCopyAsync(hybm_copy_params &params, hybm_data_copy_di
                                      const ExtOptions &options) noexcept
 {
     BM_ASSERT_LOG_AND_RETURN(inited_, "inited_ = " << inited_, BM_NOT_INITIALIZED);
-    TransformVa(params.src, params.dest, direction);
-    if (direction != HYBM_LOCAL_HOST_TO_GLOBAL_HOST && direction != HYBM_LOCAL_HOST_TO_GLOBAL_DEVICE) {
-        BM_LOG_ERROR("Host async write does not support direction: " << direction);
-        return BM_NOT_SUPPORTED;
-    }
-    if (options.destRankId == rankId_) {
-        return CopyHost2Gva(params.src, params.dest, params.dataSize, options);
-    }
-    return SafePutAsync(params.src, params.dest, params.dataSize, options);
+    BM_LOG_ERROR("not supported data copy async!");
+    return BM_ERROR;
 }
 
 Result HostDataOpRDMA::Wait(int32_t waitId) noexcept
 {
     BM_ASSERT_LOG_AND_RETURN(inited_, "inited_ = " << inited_, BM_NOT_INITIALIZED);
-    std::unordered_set<uint32_t> ranks;
-    {
-        std::lock_guard<std::mutex> lock(pendingMutex_);
-        ranks.swap(pendingRanks_);
-    }
-    for (const auto rank : ranks) {
-        const auto ret = transportManager_->Synchronize(rank);
-        if (ret != BM_OK) {
-            BM_LOG_ERROR("Host async write synchronize failed, rankId: " << rank << " ret: " << ret);
-            return ret;
-        }
-    }
-    return BM_OK;
-}
-
-Result HostDataOpRDMA::SafePutAsync(const void *srcVA, void *destVA, uint64_t length, const ExtOptions &options)
-{
-    const auto source = reinterpret_cast<uint64_t>(srcVA);
-    if (!transportManager_->QueryHasRegistered(source, length)) {
-        BM_LOG_ERROR("Host async write source is not registered, src: " << srcVA << " size: " << length);
-        return BM_INVALID_PARAM;
-    }
-    std::lock_guard<std::mutex> lock(pendingMutex_);
-    const auto ret = transportManager_->WriteRemoteAsync(options.destRankId, source,
-                                                          reinterpret_cast<uint64_t>(destVA), length);
-    if (ret != BM_OK) {
-        BM_LOG_ERROR("Host async write submit failed, rankId: " << options.destRankId << " ret: " << ret
-                                                                 << " size: " << length);
-        return ret;
-    }
-    pendingRanks_.insert(options.destRankId);
     return BM_OK;
 }
 

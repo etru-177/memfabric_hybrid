@@ -9,8 +9,6 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PSL v2 for more details.
  */
-#include <algorithm>
-
 #include "hybm_logger.h"
 #include "hybm_data_op_factory.h"
 #include "hybm_compose_data_op.h"
@@ -141,10 +139,6 @@ Result HostComposeDataOp::Initialize() noexcept
 
 void HostComposeDataOp::UnInitialize() noexcept
 {
-    {
-        std::lock_guard<std::mutex> lock(pendingAsyncMutex_);
-        pendingAsyncDataOperators_.clear();
-    }
     if (hostDeviceUrmaDataOperator_ != nullptr) {
         hostDeviceUrmaDataOperator_->UnInitialize();
         hostDeviceUrmaDataOperator_ = nullptr;
@@ -261,14 +255,8 @@ Result HostComposeDataOp::DataCopyAsync(hybm_copy_params &params, hybm_data_copy
     for (auto &ops : availableOps) {
         BM_LOG_DEBUG("try data copy async from rank " << options.srcRankId << " to rank " << options.destRankId
                                                       << " with data op " << ops.first << " direction:" << direction);
-        hybm_copy_params copyParams = params;
-        result = ops.second->DataCopyAsync(copyParams, direction, options);
+        result = ops.second->DataCopyAsync(params, direction, options);
         if (result == BM_OK) {
-            std::lock_guard<std::mutex> lock(pendingAsyncMutex_);
-            if (std::find(pendingAsyncDataOperators_.begin(), pendingAsyncDataOperators_.end(), ops.second) ==
-                pendingAsyncDataOperators_.end()) {
-                pendingAsyncDataOperators_.push_back(ops.second);
-            }
             break;
         }
 
@@ -289,26 +277,16 @@ Result HostComposeDataOp::QuantCopy(hybm_quant_copy_params &params) noexcept
 
 Result HostComposeDataOp::Wait(int32_t waitId) noexcept
 {
-    std::vector<DataOperatorPtr> pending;
-    {
-        std::lock_guard<std::mutex> lock(pendingAsyncMutex_);
-        pending.swap(pendingAsyncDataOperators_);
-    }
-    if (pending.empty()) {
-        if (sdmaDataOperator_ != nullptr) {
-            return sdmaDataOperator_->Wait(waitId);
-        }
-        BM_LOG_ERROR("No asynchronous data operator is pending");
+    /*
+     * Note: Currently, only SDMA supports asynchronous operations; we only perform the wait for the SDMA Data Operator.
+     * Subsequent consideration involves using the 3 bits in the wait ID to indicate which data operator is being used.
+     */
+    if (sdmaDataOperator_ == nullptr) {
+        BM_LOG_ERROR("SDMA data operator not exist.");
         return BM_ERROR;
     }
-    for (const auto &dataOperator : pending) {
-        const auto ret = dataOperator->Wait(waitId);
-        if (ret != BM_OK) {
-            BM_LOG_ERROR("Asynchronous data operator wait failed, ret: " << ret);
-            return ret;
-        }
-    }
-    return BM_OK;
+
+    return sdmaDataOperator_->Wait(waitId);
 }
 
 bool HostComposeDataOp::AllSupportSdma(const ExtOptions &options) noexcept
