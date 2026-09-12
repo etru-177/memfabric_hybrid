@@ -75,6 +75,7 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertEqual(args.segments[-1], 25600)
         self.assertTrue(args.force_host_nic_plugin)
         self.assertEqual(args.source_pool_segments, 0)
+        self.assertEqual(args.cold_cache_mib, 0)
 
     def test_dense_source_pool_layout_and_permutation(self):
         layout = demo.make_layout(3200, 656, 262144)
@@ -87,6 +88,11 @@ class AggregateSuiteTest(unittest.TestCase):
     def test_source_pool_must_cover_largest_case(self):
         with patch("sys.argv", ["demo", "--segments", "3200", "--segment-bytes", "656",
                                 "--source-pool-segments", "100"]):
+            with self.assertRaises(SystemExit):
+                demo.parse_args()
+
+    def test_cold_cache_size_must_be_non_negative(self):
+        with patch("sys.argv", ["demo", "--cold-cache-mib", "-1"]):
             with self.assertRaises(SystemExit):
                 demo.parse_args()
 
