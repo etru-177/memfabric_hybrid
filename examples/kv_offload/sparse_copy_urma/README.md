@@ -185,17 +185,19 @@ Device 的 message 和 ready 控制区默认合并为一次 H2G；timing 是纯�
 `--device-timing-every N` 每 N 轮回读一次 AICPU timing，传 `0` 可在性能测试时关闭 timing G2H。
 Host 可通过 `--host-cpus 48-63` 绑核；未传时会读取 env 中的
 `MF_LOCAL_DRAM_AFFINITY_CPUS`。
+Device 可通过 `--device-cpus 64-71` 绑定到另一组 CPU；未传时读取
+`MF_DEVICE_AFFINITY_CPUS`。Host 与 Device CPU 列表应互不重叠。
 
 例如测试 `32000 * 656 B`：
 
 ```bash
 python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --role host --head-ip 127.0.0.1 --segments 32000 --segment-bytes 656 \
-  --rounds 100 --gather-threads 4 --host-cpus 48-51
+  --rounds 100 --gather-threads 4 --host-cpus 48-55 --device-cpus 64-71
 
 python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --role device --head-ip 127.0.0.1 --segments 32000 --segment-bytes 656 \
-  --rounds 100 --device-timing-every 0
+  --rounds 100 --device-timing-every 0 --device-cpus 64-71
 ```
 
 Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。

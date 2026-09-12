@@ -98,6 +98,14 @@ class AggregateSuiteTest(unittest.TestCase):
                     demo.configure("host", "unused", force_host_nic_plugin=False)
                 self.assertEqual(demo.os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"], "0")
 
+    def test_device_affinity_is_configured_for_device_role(self):
+        with patch.object(demo, "load_env"), patch.object(demo, "configure_device_affinity") as affinity:
+            environment = {"MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID": "0", "ASCEND_RT_VISIBLE_DEVICES": "0"}
+            with patch.dict(demo.os.environ, environment, clear=True):
+                with patch.dict("sys.modules", {"torch": Mock()}):
+                    demo.configure("device", "unused", device_cpu_list="64-71")
+        affinity.assert_called_once_with("64-71")
+
     def test_worker_failure(self):
         process = Mock(exitcode=2)
         process.name = "device"

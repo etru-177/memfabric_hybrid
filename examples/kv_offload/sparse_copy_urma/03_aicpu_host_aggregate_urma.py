@@ -65,7 +65,7 @@ CONTROL_STORAGE_BYTES = 2 * 4096 + ctypes.sizeof(Timing)
 PACKED_CONTROL_COPY_BYTES = 4096 + 64
 
 
-class HostAffinityError(ValueError):
+class CpuAffinityError(ValueError):
     pass
 
 
@@ -87,16 +87,24 @@ def parse_cpu_list(value):
     return cpus
 
 
-def configure_host_affinity(cpu_list):
-    value = cpu_list or os.environ.get("MF_LOCAL_DRAM_AFFINITY_CPUS", "")
+def configure_process_affinity(cpu_list, env_name, label):
+    value = cpu_list or os.environ.get(env_name, "")
     if not value or value == "unavailable":
         return
     try:
         cpus = parse_cpu_list(value)
         os.sched_setaffinity(0, cpus)
     except (OSError, ValueError) as error:
-        raise HostAffinityError(str(error)) from error
-    print(f"Host CPU affinity: {','.join(str(cpu) for cpu in sorted(cpus))}")
+        raise CpuAffinityError(str(error)) from error
+    print(f"{label} CPU affinity: {','.join(str(cpu) for cpu in sorted(cpus))}")
+
+
+def configure_host_affinity(cpu_list):
+    configure_process_affinity(cpu_list, "MF_LOCAL_DRAM_AFFINITY_CPUS", "Host")
+
+
+def configure_device_affinity(cpu_list):
+    configure_process_affinity(cpu_list, "MF_DEVICE_AFFINITY_CPUS", "Device")
 
 
 def summarize(values):
@@ -152,11 +160,13 @@ def load_env(path):
             os.environ[name] = value.strip().strip("'\"")
 
 
-def configure(role, env_file, host_cpu_list=None, force_host_nic_plugin=False):
+def configure(role, env_file, host_cpu_list=None, force_host_nic_plugin=False, device_cpu_list=None):
     load_env(env_file)
     if role == "host":
         configure_host_affinity(host_cpu_list)
         os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"] = "1" if force_host_nic_plugin else "0"
+    else:
+        configure_device_affinity(device_cpu_list)
     physical = os.environ["MF_LOCAL_DRAM_PHYSICAL_DEVICE_ID"]
     visible = [item.strip() for item in os.environ["ASCEND_RT_VISIBLE_DEVICES"].split(",")]
     runtime_device = visible.index(physical)
@@ -439,6 +449,7 @@ def parse_args():
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
+    parser.add_argument("--device-cpus", help="Device process CPU list, for example 64-71")
     plugin_group = parser.add_mutually_exclusive_group()
     plugin_group.add_argument("--force-host-nic-plugin", dest="force_host_nic_plugin", action="store_true",
                               help=argparse.SUPPRESS)
@@ -465,7 +476,8 @@ def parse_args():
 
 def run_role(args, listener=None):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
-    runtime_device = configure(args.role, args.env_file, args.host_cpus, args.force_host_nic_plugin)
+    runtime_device = configure(args.role, args.env_file, args.host_cpus, args.force_host_nic_plugin,
+                               args.device_cpus)
     layout = make_layout(args.segments, args.segment_bytes)
     if rank == HOST_RANK and listener is None:
         listener = socket.create_server(("0.0.0.0", args.ctrl_port))
