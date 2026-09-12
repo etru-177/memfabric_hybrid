@@ -201,6 +201,9 @@ python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
 Host 输出 gather、URMA write、总耗时和带宽；Device 在开启 timing 时输出 scatter 和 AICPU e2e。
 手动双端模式可在 Device 加 `--verify`，用 G2H 逐字节校验有效 segment。
 
+Host gather 参考 vLLM 的 gather executor，创建 `--gather-threads` 个固定绑核的专用 worker 持续
+轮询任务，协调线程不参与拷贝。该设计避免每轮唤醒开销，但会持续占用相同数量的 CPU 核。
+
 ### 单入口批量测试（推荐）
 
 配置好本目录 `env` 并加载 MemFabric 环境后，只运行：

@@ -14,7 +14,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -37,7 +36,6 @@ namespace py = pybind11;
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint32_t PREFETCH_DISTANCE = 4;
-constexpr uint32_t WORKER_SPIN_COUNT = 4096;
 
 inline void CpuRelax()
 {
@@ -154,13 +152,15 @@ void GatherPartition(const GatherTask &task, uint32_t threadIndex)
 
 class GatherThreadPool {
 public:
-    explicit GatherThreadPool(uint32_t threadCount) : threadCount_(threadCount)
+    explicit GatherThreadPool(uint32_t threadCount)
+        : threadCount_(threadCount), done_(threadCount + 1U)
     {
         const auto cpus = GetGatherCpus(threadCount_);
         if (!cpus.empty() && cpus.size() < threadCount_) {
             throw std::invalid_argument("gatherThreads exceeds CPUs allowed by process affinity");
         }
-        for (uint32_t index = 1; index < threadCount_; ++index) {
+        workers_.reserve(threadCount_);
+        for (uint32_t index = 0U; index < threadCount_; ++index) {
             const int cpu = index < cpus.size() ? cpus[index] : -1;
             workers_.emplace_back(&GatherThreadPool::WorkerLoop, this, index, cpu);
         }
@@ -168,11 +168,8 @@ public:
 
     ~GatherThreadPool()
     {
-        {
-            std::lock_guard<std::mutex> lock(idleMutex_);
-            stopping_.store(true, std::memory_order_release);
-        }
-        idleCv_.notify_all();
+        stopping_.store(true, std::memory_order_release);
+        generation_.fetch_add(1U, std::memory_order_release);
         for (auto &worker : workers_) {
             worker.join();
         }
@@ -185,63 +182,46 @@ public:
 
     void Run(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request)
     {
-        {
-            std::lock_guard<std::mutex> lock(idleMutex_);
-            task_ = {dst, src, request, threadCount_};
-            pendingWorkers_.store(static_cast<uint32_t>(workers_.size()), std::memory_order_relaxed);
-            generation_.fetch_add(1U, std::memory_order_release);
-        }
-        idleCv_.notify_all();
-        GatherPartition(task_, 0);
-        uint32_t spin = 0;
-        while (pendingWorkers_.load(std::memory_order_acquire) != 0U) {
+        while (done_.load(std::memory_order_acquire) != threadCount_ + 1U &&
+               generation_.load(std::memory_order_relaxed) != 0U) {
             CpuRelax();
-            if (++spin == WORKER_SPIN_COUNT) {
-                spin = 0;
-                std::this_thread::yield();
-            }
+        }
+        task_ = {dst, src, request, threadCount_};
+        done_.store(0U, std::memory_order_relaxed);
+        generation_.fetch_add(1U, std::memory_order_release);
+        while (done_.load(std::memory_order_acquire) != threadCount_ + 1U) {
+            CpuRelax();
         }
     }
 
 private:
-    void WaitForWork(uint64_t observedGeneration)
-    {
-        for (uint32_t spin = 0; spin < WORKER_SPIN_COUNT; ++spin) {
-            if (stopping_.load(std::memory_order_acquire) ||
-                generation_.load(std::memory_order_acquire) != observedGeneration) {
-                return;
-            }
-            CpuRelax();
-        }
-        std::unique_lock<std::mutex> lock(idleMutex_);
-        idleCv_.wait(lock, [this, observedGeneration]() {
-            return stopping_.load(std::memory_order_acquire) ||
-                generation_.load(std::memory_order_acquire) != observedGeneration;
-        });
-    }
-
     void WorkerLoop(uint32_t threadIndex, int cpu)
     {
         PinGatherWorker(cpu);
         uint64_t observedGeneration = 0;
         while (true) {
-            WaitForWork(observedGeneration);
+            auto generation = generation_.load(std::memory_order_acquire);
+            while (generation == observedGeneration && !stopping_.load(std::memory_order_relaxed)) {
+                CpuRelax();
+                generation = generation_.load(std::memory_order_acquire);
+            }
             if (stopping_.load(std::memory_order_acquire)) {
                 return;
             }
-            observedGeneration = generation_.load(std::memory_order_acquire);
+            observedGeneration = generation;
             GatherPartition(task_, threadIndex);
-            pendingWorkers_.fetch_sub(1U, std::memory_order_release);
+            const uint32_t finished = done_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
+            if (finished == threadCount_) {
+                done_.store(threadCount_ + 1U, std::memory_order_release);
+            }
         }
     }
 
     uint32_t threadCount_;
     std::vector<std::thread> workers_;
-    std::mutex idleMutex_;
-    std::condition_variable idleCv_;
     GatherTask task_{};
     std::atomic<uint64_t> generation_{0};
-    std::atomic<uint32_t> pendingWorkers_{0};
+    std::atomic<uint32_t> done_;
     std::atomic<bool> stopping_{false};
 };
 
