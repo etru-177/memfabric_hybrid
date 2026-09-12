@@ -152,12 +152,12 @@ void GatherPartition(const GatherTask &task, uint32_t threadIndex)
 
 class GatherThreadPool {
 public:
-    explicit GatherThreadPool(uint32_t threadCount)
+    GatherThreadPool(uint32_t threadCount, const std::vector<int> &configuredCpus)
         : threadCount_(threadCount), done_(threadCount + 1U)
     {
-        const auto cpus = GetGatherCpus(threadCount_);
+        const auto cpus = configuredCpus.empty() ? GetGatherCpus(threadCount_) : configuredCpus;
         if (!cpus.empty() && cpus.size() < threadCount_) {
-            throw std::invalid_argument("gatherThreads exceeds CPUs allowed by process affinity");
+            throw std::invalid_argument("gatherThreads exceeds configured gather CPU count");
         }
         workers_.reserve(threadCount_);
         for (uint32_t index = 0U; index < threadCount_; ++index) {
@@ -225,13 +225,13 @@ private:
     std::atomic<bool> stopping_{false};
 };
 
-GatherThreadPool &GetGatherThreadPool(uint32_t threadCount)
+GatherThreadPool &GetGatherThreadPool(uint32_t threadCount, const std::vector<int> &configuredCpus)
 {
     static std::mutex poolMutex;
     static std::unique_ptr<GatherThreadPool> pool;
     std::lock_guard<std::mutex> lock(poolMutex);
     if (pool == nullptr || pool->ThreadCount() != threadCount) {
-        pool = std::make_unique<GatherThreadPool>(threadCount);
+        pool = std::make_unique<GatherThreadPool>(threadCount, configuredCpus);
     }
     return *pool;
 }
@@ -266,12 +266,13 @@ py::tuple AggregateWaitDemo(uint64_t mailbox, uint64_t expectedDoorbell)
 }
 
 uint64_t AggregateGatherRangeDemo(uint64_t source, uint64_t aggregate, uint64_t srcStride, uint32_t segmentCount,
-                                  uint32_t segmentBytes, uint32_t gatherThreads)
+                                  uint32_t segmentBytes, uint32_t gatherThreads,
+                                  const std::vector<int> &configuredCpus)
 {
     if (gatherThreads == 0U || gatherThreads > 64U) {
         throw py::value_error("gatherThreads must be in [1, 64]");
     }
-    auto &threadPool = GetGatherThreadPool(gatherThreads);
+    auto &threadPool = GetGatherThreadPool(gatherThreads, configuredCpus);
     HybmAggregateUrmaDemoRequest request{};
     request.srcStride = srcStride;
     request.segmentCount = segmentCount;
@@ -329,7 +330,7 @@ void DefineAccOffloadApi(py::module_ &m)
 
     m.def("aggregate_gather_range_demo", &AggregateGatherRangeDemo, py::arg("source"), py::arg("aggregate"),
           py::arg("srcStride"), py::arg("segmentCount"), py::arg("segmentBytes"),
-          py::arg("gatherThreads") = 1U);
+          py::arg("gatherThreads") = 1U, py::arg("configuredCpus") = std::vector<int>{});
 
     m.def("npu_kvcache_scatter_copy", &offload_kvcache_scatter_copy, py::call_guard<py::gil_scoped_release>(),
           py::arg("hbmKpe"), py::arg("hbmCkv"), py::arg("hbmBlockTable"), py::arg("dramBlockTable"),

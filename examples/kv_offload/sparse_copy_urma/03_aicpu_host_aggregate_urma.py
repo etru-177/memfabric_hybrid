@@ -99,8 +99,21 @@ def configure_process_affinity(cpu_list, env_name, label):
     print(f"{label} CPU affinity: {','.join(str(cpu) for cpu in sorted(cpus))}")
 
 
-def configure_host_affinity(cpu_list):
-    configure_process_affinity(cpu_list, "MF_LOCAL_DRAM_AFFINITY_CPUS", "Host")
+def configure_host_affinity(cpu_list, gather_cpu_list=None):
+    host_value = cpu_list or os.environ.get("MF_LOCAL_DRAM_AFFINITY_CPUS", "")
+    gather_value = gather_cpu_list or os.environ.get("MF_GATHER_AFFINITY_CPUS", "")
+    if not gather_value or gather_value == "unavailable":
+        configure_process_affinity(cpu_list, "MF_LOCAL_DRAM_AFFINITY_CPUS", "Host")
+        return
+    host_cpus = parse_cpu_list(host_value) if host_value else set(os.sched_getaffinity(0))
+    gather_cpus = parse_cpu_list(gather_value)
+    control_cpus = host_cpus - gather_cpus
+    if not host_cpus or not gather_cpus.issubset(host_cpus) or not control_cpus:
+        raise CpuAffinityError("gather CPUs must be a proper subset of Host CPUs")
+    os.sched_setaffinity(0, control_cpus)
+    os.environ["MF_GATHER_AFFINITY_CPUS"] = ",".join(str(cpu) for cpu in sorted(gather_cpus))
+    print(f"Host control CPU affinity: {','.join(str(cpu) for cpu in sorted(control_cpus))}")
+    print(f"Host gather CPU affinity: {os.environ['MF_GATHER_AFFINITY_CPUS']}")
 
 
 def configure_device_affinity(cpu_list):
@@ -160,10 +173,11 @@ def load_env(path):
             os.environ[name] = value.strip().strip("'\"")
 
 
-def configure(role, env_file, host_cpu_list=None, force_host_nic_plugin=False, device_cpu_list=None):
+def configure(role, env_file, host_cpu_list=None, force_host_nic_plugin=False, device_cpu_list=None,
+              gather_cpu_list=None):
     load_env(env_file)
     if role == "host":
-        configure_host_affinity(host_cpu_list)
+        configure_host_affinity(host_cpu_list, gather_cpu_list)
         os.environ["HCOMM_NIC_PLUGIN_FORCE_LOAD"] = "1" if force_host_nic_plugin else "0"
     else:
         configure_device_affinity(device_cpu_list)
@@ -226,7 +240,7 @@ def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expect
         raise RuntimeError("device request layout does not match host arguments")
     work_begin = time.perf_counter_ns()
     gather_ns = offload.aggregate_gather_range_demo(
-        source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads
+        source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads, args.gather_cpu_ids
     )
     write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
     work_ns = time.perf_counter_ns() - work_begin
@@ -254,7 +268,13 @@ def run_host(args, handle, bm, listener, layout):
     conn, _ = listener.accept()
     stage_names = ("gather", "URMA write", "host total")
     stages = {name: [] for name in stage_names}
-    offload.aggregate_gather_range_demo(source, aggregate, stride, 0, args.segment_bytes, args.gather_threads)
+    gather_value = os.environ.get("MF_GATHER_AFFINITY_CPUS", "")
+    args.gather_cpu_ids = sorted(parse_cpu_list(gather_value)) if gather_value else []
+    if args.gather_cpu_ids and len(args.gather_cpu_ids) < args.gather_threads:
+        raise CpuAffinityError("gather CPU count must be at least gatherThreads")
+    offload.aggregate_gather_range_demo(
+        source, aggregate, stride, 0, args.segment_bytes, args.gather_threads, args.gather_cpu_ids
+    )
     with conn:
         conn.sendall(b"R")
         for round_index in range(args.rounds):
@@ -448,6 +468,7 @@ def parse_args():
     parser.add_argument("--case-timeout", type=float, default=600,
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
+    parser.add_argument("--gather-cpus", help="dedicated gather worker CPUs; must be a subset of Host CPUs")
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-cpus", help="Device process CPU list, for example 64-71")
     plugin_group = parser.add_mutually_exclusive_group()
@@ -477,7 +498,7 @@ def parse_args():
 def run_role(args, listener=None):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
     runtime_device = configure(args.role, args.env_file, args.host_cpus, args.force_host_nic_plugin,
-                               args.device_cpus)
+                               args.device_cpus, args.gather_cpus)
     layout = make_layout(args.segments, args.segment_bytes)
     if rank == HOST_RANK and listener is None:
         listener = socket.create_server(("0.0.0.0", args.ctrl_port))

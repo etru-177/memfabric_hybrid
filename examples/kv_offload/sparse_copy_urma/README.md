@@ -187,13 +187,16 @@ Host 可通过 `--host-cpus 48-63` 绑核；未传时会读取 env 中的
 `MF_LOCAL_DRAM_AFFINITY_CPUS`。
 Device 可通过 `--device-cpus 64-71` 绑定到另一组 CPU；未传时读取
 `MF_DEVICE_AFFINITY_CPUS`。Host 与 Device CPU 列表应互不重叠。
+Gather worker 可通过 `--gather-cpus 48-63` 单独绑核；未传时读取
+`MF_GATHER_AFFINITY_CPUS`。gather CPU 必须是 Host CPU 的真子集，剩余 Host CPU 专供协调线程和
+初始化阶段创建的 HCOMM 后台线程。
 
 例如测试 `32000 * 656 B`：
 
 ```bash
 python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --role host --head-ip 127.0.0.1 --segments 32000 --segment-bytes 656 \
-  --rounds 100 --gather-threads 4 --host-cpus 48-55 --device-cpus 64-71
+  --rounds 100 --gather-threads 4 --host-cpus 48-55 --gather-cpus 48-51 --device-cpus 64-71
 
 python3 examples/kv_offload/sparse_copy_urma/03_aicpu_host_aggregate_urma.py \
   --role device --head-ip 127.0.0.1 --segments 32000 --segment-bytes 656 \

@@ -106,6 +106,17 @@ class AggregateSuiteTest(unittest.TestCase):
                     demo.configure("device", "unused", device_cpu_list="64-71")
         affinity.assert_called_once_with("64-71")
 
+    def test_host_control_and_gather_cpus_are_disjoint(self):
+        with patch.object(demo.os, "sched_setaffinity") as set_affinity:
+            with patch.dict(demo.os.environ, {}, clear=True):
+                demo.configure_host_affinity("0-7", "0-3")
+        set_affinity.assert_called_once_with(0, {4, 5, 6, 7})
+        self.assertEqual(demo.os.environ["MF_GATHER_AFFINITY_CPUS"], "0,1,2,3")
+
+    def test_gather_cpus_must_leave_host_control_cpu(self):
+        with self.assertRaisesRegex(demo.CpuAffinityError, "proper subset"):
+            demo.configure_host_affinity("0-3", "0-3")
+
     def test_worker_failure(self):
         process = Mock(exitcode=2)
         process.name = "device"
