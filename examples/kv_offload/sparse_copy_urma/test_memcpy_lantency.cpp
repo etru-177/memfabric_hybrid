@@ -16,15 +16,23 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <numeric>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <sys/mman.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sched.h>
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -44,11 +52,59 @@ struct BenchmarkResult {
     double bandwidthGiBs;
 };
 
+std::vector<size_t> MakeRandomOffsets(size_t copies, size_t stride, uint64_t seed);
+
+class HugePageBuffer {
+public:
+    HugePageBuffer(size_t size, uint8_t value) : size_(size)
+    {
+        const long pageSize = sysconf(_SC_PAGESIZE);
+        const auto alignment = static_cast<size_t>(pageSize);
+        if (pageSize <= 0 || posix_memalign(reinterpret_cast<void **>(&data_), alignment, size_) != 0) {
+            throw std::bad_alloc();
+        }
+#ifdef MADV_HUGEPAGE
+        if (madvise(data_, size_, MADV_HUGEPAGE) != 0) {
+            std::cerr << "warning: MADV_HUGEPAGE failed, size=" << size_ << '\n';
+        }
+#endif
+        std::memset(data_, value, size_);
+    }
+
+    ~HugePageBuffer()
+    {
+        std::free(data_);
+    }
+
+    HugePageBuffer(const HugePageBuffer &) = delete;
+    HugePageBuffer &operator=(const HugePageBuffer &) = delete;
+    HugePageBuffer(HugePageBuffer &&other) noexcept : data_(other.data_), size_(other.size_)
+    {
+        other.data_ = nullptr;
+        other.size_ = 0U;
+    }
+    HugePageBuffer &operator=(HugePageBuffer &&) = delete;
+
+    uint8_t *Data() const
+    {
+        return data_;
+    }
+
+private:
+    uint8_t *data_{nullptr};
+    size_t size_{0U};
+};
+
 struct CopyBuffers {
-    std::vector<uint8_t> source;
-    std::vector<uint8_t> destination;
+    HugePageBuffer source;
+    HugePageBuffer destination;
     std::vector<size_t> sourceOffsets;
     std::vector<size_t> destinationOffsets;
+
+    CopyBuffers(size_t size, size_t copies, size_t stride, uint64_t seed)
+        : source(size, 0x5A), destination(size, 0), sourceOffsets(MakeRandomOffsets(copies, stride, seed)),
+          destinationOffsets(MakeRandomOffsets(copies, stride, seed ^ 0xD1B54A32D192ED03ULL))
+    {}
 };
 
 template <size_t Bytes>
@@ -102,37 +158,119 @@ void CompilerBarrier(const void *memory)
 #endif
 }
 
+inline void CpuRelax()
+{
+#if defined(__aarch64__)
+    __asm__ __volatile__("yield" : : : "memory");
+#elif defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("pause" : : : "memory");
+#else
+    std::this_thread::yield();
+#endif
+}
+
+std::vector<int> GetWorkerCpus(uint32_t threadCount)
+{
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    if (sched_getaffinity(0, sizeof(affinity), &affinity) != 0) {
+        return {};
+    }
+    std::vector<int> cpus;
+    const int callerCpu = sched_getcpu();
+    if (callerCpu >= 0 && CPU_ISSET(callerCpu, &affinity)) {
+        cpus.push_back(callerCpu);
+    }
+    for (int cpu = 0; cpu < CPU_SETSIZE && cpus.size() < threadCount; ++cpu) {
+        if (CPU_ISSET(cpu, &affinity) && cpu != callerCpu) {
+            cpus.push_back(cpu);
+        }
+    }
+    return cpus;
+}
+
+void PinWorker(int cpu)
+{
+    if (cpu < 0) {
+        return;
+    }
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(cpu, &affinity);
+    (void)pthread_setaffinity_np(pthread_self(), sizeof(affinity), &affinity);
+}
+
 size_t AlignUp(size_t value, size_t alignment)
 {
     return (value + alignment - 1U) / alignment * alignment;
 }
 
-template <typename Work>
-double RunWorkers(uint32_t threadCount, const Work &work)
-{
-    std::atomic<uint32_t> ready{0U};
-    std::atomic<bool> start{false};
-    std::vector<std::thread> workers;
-    workers.reserve(threadCount);
-    for (uint32_t thread = 0U; thread < threadCount; ++thread) {
-        workers.emplace_back([&, thread]() {
-            ready.fetch_add(1U, std::memory_order_release);
-            while (!start.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
+class DedicatedWorkers {
+public:
+    explicit DedicatedWorkers(uint32_t threadCount) : threadCount_(threadCount), done_(threadCount + 1U)
+    {
+        const auto cpus = GetWorkerCpus(threadCount_);
+        if (!cpus.empty() && cpus.size() < threadCount_) {
+            throw std::invalid_argument("thread count exceeds CPUs allowed by process affinity");
+        }
+        workers_.reserve(threadCount_);
+        for (uint32_t index = 0U; index < threadCount_; ++index) {
+            const int cpu = index < cpus.size() ? cpus[index] : -1;
+            workers_.emplace_back(&DedicatedWorkers::WorkerLoop, this, index, cpu);
+        }
+    }
+
+    ~DedicatedWorkers()
+    {
+        stopping_.store(true, std::memory_order_release);
+        generation_.fetch_add(1U, std::memory_order_release);
+        for (auto &worker : workers_) {
+            worker.join();
+        }
+    }
+
+    double Run(const std::function<void(uint32_t)> &work)
+    {
+        work_ = &work;
+        done_.store(0U, std::memory_order_relaxed);
+        const auto begin = Clock::now();
+        generation_.fetch_add(1U, std::memory_order_release);
+        while (done_.load(std::memory_order_acquire) != threadCount_ + 1U) {
+            CpuRelax();
+        }
+        return std::chrono::duration<double, std::nano>(Clock::now() - begin).count();
+    }
+
+private:
+    void WorkerLoop(uint32_t index, int cpu)
+    {
+        PinWorker(cpu);
+        uint64_t observed = 0U;
+        while (true) {
+            auto generation = generation_.load(std::memory_order_acquire);
+            while (generation == observed && !stopping_.load(std::memory_order_relaxed)) {
+                CpuRelax();
+                generation = generation_.load(std::memory_order_acquire);
             }
-            work(thread);
-        });
+            if (stopping_.load(std::memory_order_acquire)) {
+                return;
+            }
+            observed = generation;
+            (*work_)(index);
+            const uint32_t finished = done_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
+            if (finished == threadCount_) {
+                done_.store(threadCount_ + 1U, std::memory_order_release);
+            }
+        }
     }
-    while (ready.load(std::memory_order_acquire) != threadCount) {
-        std::this_thread::yield();
-    }
-    const auto begin = Clock::now();
-    start.store(true, std::memory_order_release);
-    for (auto &worker : workers) {
-        worker.join();
-    }
-    return std::chrono::duration<double, std::nano>(Clock::now() - begin).count();
-}
+
+    uint32_t threadCount_;
+    std::vector<std::thread> workers_;
+    const std::function<void(uint32_t)> *work_{nullptr};
+    std::atomic<uint64_t> generation_{0U};
+    std::atomic<uint32_t> done_;
+    std::atomic<bool> stopping_{false};
+};
 
 std::vector<size_t> MakeRandomOffsets(size_t copies, size_t stride, uint64_t seed)
 {
@@ -155,10 +293,7 @@ std::vector<CopyBuffers> MakeBuffers(uint32_t threadCount, uint64_t rounds, size
     buffers.reserve(threadCount);
     for (uint32_t thread = 0U; thread < threadCount; ++thread) {
         const uint64_t seed = 0x9E3779B97F4A7C15ULL * (static_cast<uint64_t>(thread) + 1U);
-        buffers.push_back({std::vector<uint8_t>(copies * stride, 0x5A),
-                           std::vector<uint8_t>(copies * stride, 0),
-                           MakeRandomOffsets(copies, stride, seed),
-                           MakeRandomOffsets(copies, stride, seed ^ 0xD1B54A32D192ED03ULL)});
+        buffers.emplace_back(copies * stride, copies, stride, seed);
     }
     return buffers;
 }
@@ -169,16 +304,17 @@ BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, uint32_t threadCoun
     constexpr double bytesPerGiB = 1024.0 * 1024.0 * 1024.0;
     constexpr double nanosecondsPerSecond = 1e9;
     auto buffers = MakeBuffers(threadCount, rounds, bytes);
+    DedicatedWorkers workers(threadCount);
     const auto throughputWork = [&](uint32_t thread) {
         auto &buffer = buffers[thread];
         for (uint64_t round = 0; round < rounds; ++round) {
             const size_t srcOffset = buffer.sourceOffsets[round];
             const size_t dstOffset = buffer.destinationOffsets[round];
-            copy(buffer.destination.data() + dstOffset, buffer.source.data() + srcOffset);
-            CompilerBarrier(buffer.destination.data() + dstOffset);
+            copy(buffer.destination.Data() + dstOffset, buffer.source.Data() + srcOffset);
+            CompilerBarrier(buffer.destination.Data() + dstOffset);
         }
     };
-    const double elapsedNs = RunWorkers(threadCount, throughputWork);
+    const double elapsedNs = workers.Run(throughputWork);
 
     std::vector<std::vector<uint64_t>> threadLatencies(threadCount);
     const auto latencyWork = [&](uint32_t thread) {
@@ -189,14 +325,14 @@ BenchmarkResult MeasureMemcpy(uint64_t rounds, size_t bytes, uint32_t threadCoun
             const size_t srcOffset = buffer.sourceOffsets[round];
             const size_t dstOffset = buffer.destinationOffsets[round];
             const auto begin = Clock::now();
-            copy(buffer.destination.data() + dstOffset, buffer.source.data() + srcOffset);
+            copy(buffer.destination.Data() + dstOffset, buffer.source.Data() + srcOffset);
             const auto end = Clock::now();
-            CompilerBarrier(buffer.destination.data() + dstOffset);
+            CompilerBarrier(buffer.destination.Data() + dstOffset);
             latencies.push_back(
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()));
         }
     };
-    (void)RunWorkers(threadCount, latencyWork);
+    (void)workers.Run(latencyWork);
 
     std::vector<uint64_t> latencies;
     const uint64_t totalCopies = rounds * threadCount;
