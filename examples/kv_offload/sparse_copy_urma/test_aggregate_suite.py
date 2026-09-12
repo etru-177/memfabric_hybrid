@@ -74,6 +74,21 @@ class AggregateSuiteTest(unittest.TestCase):
                                               for m in (1, 2, 4, 8, 16, 32, 64)}))
         self.assertEqual(args.segments[-1], 25600)
         self.assertTrue(args.force_host_nic_plugin)
+        self.assertEqual(args.source_pool_segments, 0)
+
+    def test_dense_source_pool_layout_and_permutation(self):
+        layout = demo.make_layout(3200, 656, 262144)
+        self.assertGreaterEqual(layout[3], layout[2] + 262144 * 656)
+        first = list(demo.make_source_indices(32, 2026))
+        second = list(demo.make_source_indices(32, 2026))
+        self.assertEqual(first, second)
+        self.assertEqual(sorted(first), list(range(32)))
+
+    def test_source_pool_must_cover_largest_case(self):
+        with patch("sys.argv", ["demo", "--segments", "3200", "--segment-bytes", "656",
+                                "--source-pool-segments", "100"]):
+            with self.assertRaises(SystemExit):
+                demo.parse_args()
 
     def test_host_plugin_can_be_disabled(self):
         with patch("sys.argv", ["demo", "--no-host-nic-plugin"]):

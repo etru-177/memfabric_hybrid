@@ -9,6 +9,7 @@ import json
 import math
 import multiprocessing
 import os
+import random
 import socket
 import tempfile
 import time
@@ -150,11 +151,12 @@ def print_timing_summary(title, stage_samples, stage_bytes):
     print_table(title, ("stage", "avg(us)", "min(us)", "max(us)", "P95(us)", "P99(us)", "GiB/s"), rows)
 
 
-def make_layout(count, segment_bytes):
+def make_layout(count, segment_bytes, source_pool_segments=0):
     total = count * segment_bytes
     stride = 2 * segment_bytes
+    source_span = (source_pool_segments or count) * (segment_bytes if source_pool_segments else stride)
     source = 4096
-    aggregate = align_up(source + count * stride, 4096)
+    aggregate = align_up(source + source_span, 4096)
     dst_new = CONTROL_BYTES
     dst_base = align_up(dst_new + total, 4096)
     pool_bytes = align_up(max(aggregate + total, dst_base + count * stride), POOL_ALIGN)
@@ -223,13 +225,23 @@ def fill_source_pattern(source, stride, segment_count, segment_bytes):
         ctypes.memset(source + index * stride, index & 0xFF, segment_bytes)
 
 
+def make_source_indices(segment_count, seed):
+    values = list(range(segment_count))
+    random.Random(seed).shuffle(values)
+    return (ctypes.c_uint32 * segment_count)(*values)
+
+
+def gather_source_ordinal(args, round_index):
+    return round_index * args.segments % args.source_pool_segments
+
+
 def fill_destination_poison(destination, stride, segment_count, segment_bytes):
     ctypes.memset(destination, 0xA5, (segment_count - 1) * stride + segment_bytes)
     for index in range(segment_count):
         ctypes.memset(destination + index * stride, (index & 0xFF) ^ 0xFF, segment_bytes)
 
 
-def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell):
+def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, source_indices, expected_doorbell):
     result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
     expected_total = args.segments * args.segment_bytes
@@ -239,9 +251,14 @@ def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, expect
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
     work_begin = time.perf_counter_ns()
-    gather_ns = offload.aggregate_gather_range_demo(
-        source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads, args.gather_cpu_ids
-    )
+    if source_indices is None:
+        gather_ns = offload.aggregate_gather_range_demo(
+            source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads, args.gather_cpu_ids)
+    else:
+        gather_ns = offload.aggregate_gather_indexed_demo(
+            source, aggregate, ctypes.addressof(source_indices), args.source_pool_segments,
+            gather_source_ordinal(args, expected_doorbell - 1), segment_count, segment_bytes,
+            args.gather_threads, args.gather_cpu_ids)
     write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
     work_ns = time.perf_counter_ns() - work_begin
     return ready_gva, total_bytes, gather_ns, write_ns, work_ns
@@ -261,7 +278,10 @@ def run_host(args, handle, bm, listener, layout):
     source = host_va + source_offset
     aggregate = host_va + aggregate_offset
     ctypes.memset(mailbox, 0, ctypes.sizeof(Message))
-    fill_source_pattern(source, stride, args.segments, args.segment_bytes)
+    source_count = args.source_pool_segments or args.segments
+    source_stride = args.segment_bytes if args.source_pool_segments else stride
+    fill_source_pattern(source, source_stride, source_count, args.segment_bytes)
+    source_indices = make_source_indices(source_count, args.source_seed) if args.source_pool_segments else None
 
     from _pymf_acc_offload import offload
 
@@ -280,7 +300,7 @@ def run_host(args, handle, bm, listener, layout):
         for round_index in range(args.rounds):
             expected_doorbell = round_index + 1
             ready_gva, _, gather_ns, write_ns, work_ns = run_host_round(
-                args, handle, bm, offload, mailbox, source, aggregate, expected_doorbell
+                args, handle, bm, offload, mailbox, source, aggregate, source_indices, expected_doorbell
             )
             ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
             stages["gather"].append(gather_ns)
@@ -377,7 +397,7 @@ def stage_device_control(handle, bm, control, hbm_gva):
     copy_to_hbm(handle, bm, ctypes.addressof(control), hbm_gva, PACKED_CONTROL_COPY_BYTES)
 
 
-def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback):
+def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback, source_indices=None):
     span = (args.segments - 1) * (2 * args.segment_bytes) + args.segment_bytes
     assert handle.copy_data(hbm_gva + dst_base_offset, ctypes.addressof(readback), span,
                             bm.BmCopyType.G2H, 0) == 0
@@ -385,7 +405,11 @@ def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, read
     stride = 2 * args.segment_bytes
     for index in range(args.segments):
         begin = index * stride
-        expected = index & 0xFF
+        if source_indices is None:
+            expected = index & 0xFF
+        else:
+            ordinal = (gather_source_ordinal(args, round_index) + index) % args.source_pool_segments
+            expected = source_indices[ordinal] & 0xFF
         mismatch = next((offset for offset, value in enumerate(actual[begin:begin + args.segment_bytes])
                          if value != expected), None)
         if mismatch is not None:
@@ -407,6 +431,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
     scatter_span = (args.segments - 1) * stride + args.segment_bytes
     readback = (ctypes.c_uint8 * scatter_span)() if args.verify else None
     poison = (ctypes.c_uint8 * scatter_span)() if args.verify else None
+    source_indices = (make_source_indices(args.source_pool_segments, args.source_seed)
+                      if args.source_pool_segments else None)
     stages = {"launch sync": []}
     if timing_enabled:
         stages.update({"scatter copy": [], "publish barrier": [], "scatter total": [], "AICPU e2e": []})
@@ -430,7 +456,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
             launch_end = time.perf_counter_ns()
             stages["launch sync"].append(launch_end - launch_begin)
             if args.verify:
-                verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback)
+                verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback, source_indices)
             timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
@@ -468,6 +494,10 @@ def parse_args():
     parser.add_argument("--case-timeout", type=float, default=600,
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
+    parser.add_argument("--source-pool-segments", type=int, default=0,
+                        help="dense Host token pool size; 0 keeps the fixed strided source addresses")
+    parser.add_argument("--source-seed", type=int, default=2026,
+                        help="seed for the source-pool permutation")
     parser.add_argument("--gather-cpus", help="dedicated gather worker CPUs; must be a subset of Host CPUs")
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-cpus", help="Device process CPU list, for example 64-71")
@@ -486,6 +516,9 @@ def parse_args():
         parser.error("--segments, --segment-bytes and --rounds must be positive")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
+    if args.source_pool_segments < 0 or (args.source_pool_segments and
+                                        args.source_pool_segments < max(args.segments)):
+        parser.error("--source-pool-segments must be 0 or at least the largest --segments value")
     if args.device_timing_every < 0:
         parser.error("--device-timing-every must be non-negative")
     if not math.isfinite(args.case_timeout) or args.case_timeout <= 0:
@@ -499,7 +532,7 @@ def run_role(args, listener=None):
     rank = HOST_RANK if args.role == "host" else NPU_RANK
     runtime_device = configure(args.role, args.env_file, args.host_cpus, args.force_host_nic_plugin,
                                args.device_cpus, args.gather_cpus)
-    layout = make_layout(args.segments, args.segment_bytes)
+    layout = make_layout(args.segments, args.segment_bytes, args.source_pool_segments)
     if rank == HOST_RANK and listener is None:
         listener = socket.create_server(("0.0.0.0", args.ctrl_port))
     import memfabric_hybrid as mf
