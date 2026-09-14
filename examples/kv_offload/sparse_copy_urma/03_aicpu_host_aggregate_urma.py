@@ -403,7 +403,6 @@ def record_device_timing(stages, timing, launch_ns):
     stages["scatter copy"].append(timing.scatter_copy_ns)
     stages["publish barrier"].append(timing.scatter_publish_ns)
     stages["scatter total"].append(timing.scatter_ns)
-    stages["AICPU control"].append(max(0, timing.total_ns - timing.wait_host_ns - timing.scatter_ns))
     stages["AICPU e2e"].append(timing.total_ns)
     stages["launch overhead"].append(max(0, launch_ns - timing.total_ns))
 
@@ -447,7 +446,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
     stages = {"launch sync": []}
     if timing_enabled:
         stages.update({name: [] for name in ("request publish", "wait host", "scatter copy", "publish barrier",
-                                             "scatter total", "AICPU control", "AICPU e2e", "launch overhead")})
+                                             "scatter total", "AICPU e2e", "launch overhead")})
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
@@ -663,7 +662,6 @@ def print_metric_descriptions():
         ("wait host", "AICPU 等待 Host ready signal 的时间；它包含 Host total，不能与 host 相加。"),
         ("scatter", "AICPU 将连续临时缓冲区分散写入目标地址并完成发布屏障的时间。"),
         ("publish", "scatter 数据复制后的 dsb ish 可见性屏障时间，已包含在 scatter 中。"),
-        ("AICPU ctrl", "AICPU e2e 减去 wait host 和 scatter；当前实现基本等于 request。"),
         ("AICPU e2e", "AICPU kernel 内部总时间，等于 request、wait host 和 scatter 之和。"),
         ("launch ovh", "E2E 减去 AICPU e2e，主要是运行时下发、调度、退出和同步开销。"),
         ("E2E GiB/s", "每轮有效字节数除以 E2E 时延得到的端到端带宽。"),
@@ -678,7 +676,7 @@ def run_suite(args):
     directory = tempfile.mkdtemp(prefix="mf_aggregate_suite_")
     rows = []
     metric_names = ("launch sync", "host total", "gather", "URMA write", "request publish", "wait host",
-                    "scatter total", "publish barrier", "AICPU control", "AICPU e2e", "launch overhead")
+                    "scatter total", "publish barrier", "AICPU e2e", "launch overhead")
     sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
     print(f"rounds/case={args.rounds}, cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
     try:
@@ -702,7 +700,7 @@ def run_suite(args):
                         f"verify={'PASS' if args.verify else 'OFF'})",
                         ("bytes/pkt", "packets", "MiB", "E2E(us)", "host(us)", "gather(us)",
                          "write(us)", "request(us)", "wait host(us)", "scatter(us)", "publish(us)",
-                         "AICPU ctrl(us)", "AICPU e2e(us)", "launch ovh(us)", "E2E GiB/s"), rows)
+                         "AICPU e2e(us)", "launch ovh(us)", "E2E GiB/s"), rows)
             print_metric_descriptions()
         print(f"Full Host/Device logs and mean timings: {directory}", flush=True)
 
