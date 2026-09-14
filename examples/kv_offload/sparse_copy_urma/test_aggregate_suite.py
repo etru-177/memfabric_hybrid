@@ -163,6 +163,19 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertIn("100.000", out.getvalue())
         self.assertIn("50.000", out.getvalue())
 
+    def test_suite_prints_device_overhead_breakdown(self):
+        with patch("sys.argv", ["demo", "--segments", "100", "--segment-bytes", "656"]):
+            args = demo.parse_args()
+        values = {"launch sync": 500000, "AICPU e2e": 400000, "request publish": 10000,
+                  "wait host": 80000, "AICPU control": 30000, "publish barrier": 40000,
+                  "launch overhead": 100000}
+        with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp",
+                                                                       return_value=directory):
+            with patch.object(demo, "run_case", return_value=values), contextlib.redirect_stdout(io.StringIO()) as out:
+                demo.run_suite(args)
+        self.assertIn("Device overhead breakdown", out.getvalue())
+        self.assertIn("launch ovh(us)", out.getvalue())
+
     def test_poison_and_readback(self):
         args = Mock(segments=2, segment_bytes=4)
         source = (ctypes.c_uint8 * 12)()
