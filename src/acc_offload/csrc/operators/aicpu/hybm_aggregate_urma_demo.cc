@@ -17,7 +17,6 @@
 
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr uint32_t kScatterPrefetchDistance = 4U;
 
 uint64_t ElapsedNs(Clock::time_point begin, Clock::time_point end)
 {
@@ -92,10 +91,6 @@ void ScatterFixed(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUr
     auto *destination = param.dstBase;
     const auto *source = param.dstNew;
     for (uint32_t index = 0; index < request.segmentCount; ++index) {
-        if (request.segmentCount - index > kScatterPrefetchDistance) {
-            __builtin_prefetch(source + kScatterPrefetchDistance * Bytes, 0, 1);
-            __builtin_prefetch(destination + kScatterPrefetchDistance * request.dstStride, 1, 1);
-        }
         CopyFixed<Bytes>(destination, source);
         source += Bytes;
         destination += request.dstStride;
