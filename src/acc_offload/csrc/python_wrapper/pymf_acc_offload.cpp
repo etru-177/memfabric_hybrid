@@ -127,8 +127,10 @@ struct GatherTask {
     HybmAggregateUrmaDemoRequest request;
     uint32_t threadCount;
     const uint32_t *sourceIndices;
+    const uint64_t *sourceAddresses;
     uint32_t sourcePoolSegments;
     uint64_t sourceOrdinal;
+    int64_t gvaToVaOffset;
 };
 
 template <size_t Bytes>
@@ -165,6 +167,37 @@ void GatherIndexed(const GatherTask &task, uint32_t begin, uint32_t end)
     }
 }
 
+template <size_t Bytes>
+void GatherAddressesFixed(const GatherTask &task, uint32_t begin, uint32_t end)
+{
+    for (uint32_t index = begin; index < end; ++index) {
+        const auto source = reinterpret_cast<const uint8_t *>(task.sourceAddresses[index] + task.gvaToVaOffset);
+        if (end - index > PREFETCH_DISTANCE) {
+            const auto next = reinterpret_cast<const uint8_t *>(
+                task.sourceAddresses[index + PREFETCH_DISTANCE] + task.gvaToVaOffset);
+            __builtin_prefetch(next, 0, 1);
+        }
+        CopyFixed<Bytes>(task.dst + static_cast<uint64_t>(index) * Bytes, source);
+    }
+}
+
+void GatherAddresses(const GatherTask &task, uint32_t begin, uint32_t end)
+{
+    if (task.request.segmentBytes == 656U) {
+        GatherAddressesFixed<656>(task, begin, end);
+    } else if (task.request.segmentBytes == 576U) {
+        GatherAddressesFixed<576>(task, begin, end);
+    } else if (task.request.segmentBytes == 1152U) {
+        GatherAddressesFixed<1152>(task, begin, end);
+    } else {
+        for (uint32_t index = begin; index < end; ++index) {
+            const auto source = reinterpret_cast<const void *>(task.sourceAddresses[index] + task.gvaToVaOffset);
+            std::memcpy(task.dst + static_cast<uint64_t>(index) * task.request.segmentBytes, source,
+                        task.request.segmentBytes);
+        }
+    }
+}
+
 void GatherPartition(const GatherTask &task, uint32_t threadIndex)
 {
     const uint32_t segmentsPerCacheLine = 64U / std::gcd(64U, task.request.segmentBytes);
@@ -179,6 +212,10 @@ void GatherPartition(const GatherTask &task, uint32_t threadIndex)
     const uint32_t begin = partitionBoundary(threadIndex);
     const uint32_t end = partitionBoundary(threadIndex + 1U);
     if (begin == end) {
+        return;
+    }
+    if (task.sourceAddresses != nullptr) {
+        GatherAddresses(task, begin, end);
         return;
     }
     if (task.sourceIndices != nullptr) {
@@ -222,13 +259,15 @@ public:
     }
 
     void Run(uint8_t *dst, const uint8_t *src, const HybmAggregateUrmaDemoRequest &request,
-             const uint32_t *sourceIndices = nullptr, uint32_t sourcePoolSegments = 0U, uint64_t sourceOrdinal = 0U)
+             const uint32_t *sourceIndices = nullptr, uint32_t sourcePoolSegments = 0U, uint64_t sourceOrdinal = 0U,
+             const uint64_t *sourceAddresses = nullptr, int64_t gvaToVaOffset = 0)
     {
         while (done_.load(std::memory_order_acquire) != threadCount_ + 1U &&
                generation_.load(std::memory_order_relaxed) != 0U) {
             CpuRelax();
         }
-        task_ = {dst, src, request, threadCount_, sourceIndices, sourcePoolSegments, sourceOrdinal};
+        task_ = {dst, src, request, threadCount_, sourceIndices, sourceAddresses, sourcePoolSegments, sourceOrdinal,
+                 gvaToVaOffset};
         done_.store(0U, std::memory_order_relaxed);
         generation_.fetch_add(1U, std::memory_order_release);
         while (done_.load(std::memory_order_acquire) != threadCount_ + 1U) {
@@ -355,6 +394,29 @@ uint64_t AggregateGatherIndexedDemo(uint64_t source, uint64_t aggregate, uint64_
     return gatherNs;
 }
 
+uint64_t AggregateGatherAddressesDemo(uint64_t aggregate, uint64_t sourceAddresses, int64_t gvaToVaOffset,
+                                      uint32_t segmentCount, uint32_t segmentBytes, uint32_t gatherThreads,
+                                      const std::vector<int> &configuredCpus)
+{
+    if (gatherThreads == 0U || gatherThreads > 64U) {
+        throw py::value_error("gatherThreads must be in [1, 64]");
+    }
+    auto &threadPool = GetGatherThreadPool(gatherThreads, configuredCpus);
+    HybmAggregateUrmaDemoRequest request{};
+    request.segmentCount = segmentCount;
+    request.segmentBytes = segmentBytes;
+    uint64_t gatherNs = 0;
+    {
+        py::gil_scoped_release release;
+        const auto begin = Clock::now();
+        threadPool.Run(reinterpret_cast<uint8_t *>(aggregate), nullptr, request, nullptr, 0U, 0U,
+                       reinterpret_cast<const uint64_t *>(sourceAddresses), gvaToVaOffset);
+        const auto end = Clock::now();
+        gatherNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+    }
+    return gatherNs;
+}
+
 void DefineAccOffloadConfig(py::module_ &m)
 {
     py::enum_<offload_scene_t>(m, "Scene")
@@ -402,6 +464,10 @@ void DefineAccOffloadApi(py::module_ &m)
     m.def("aggregate_gather_indexed_demo", &AggregateGatherIndexedDemo, py::arg("source"), py::arg("aggregate"),
           py::arg("sourceIndices"), py::arg("sourcePoolSegments"), py::arg("sourceOrdinal"),
           py::arg("segmentCount"), py::arg("segmentBytes"), py::arg("gatherThreads") = 1U,
+          py::arg("configuredCpus") = std::vector<int>{});
+    m.def("aggregate_gather_addresses_demo", &AggregateGatherAddressesDemo, py::arg("aggregate"),
+          py::arg("sourceAddresses"), py::arg("gvaToVaOffset"), py::arg("segmentCount"),
+          py::arg("segmentBytes"), py::arg("gatherThreads") = 1U,
           py::arg("configuredCpus") = std::vector<int>{});
 
     m.def("npu_kvcache_scatter_copy", &offload_kvcache_scatter_copy, py::call_guard<py::gil_scoped_release>(),

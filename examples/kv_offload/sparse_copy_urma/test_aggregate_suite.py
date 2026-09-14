@@ -79,9 +79,9 @@ class AggregateSuiteTest(unittest.TestCase):
 
     def test_dense_source_pool_layout_and_permutation(self):
         layout = demo.make_layout(3200, 656, 262144)
-        index_bytes = 3200 * ctypes.sizeof(ctypes.c_uint32)
-        self.assertGreaterEqual(layout[2], ctypes.sizeof(demo.Message) + index_bytes)
-        self.assertGreaterEqual(layout[4], demo.DEVICE_INDEX_OFFSET + index_bytes)
+        address_bytes = 3200 * ctypes.sizeof(ctypes.c_uint64)
+        self.assertGreaterEqual(layout[2], ctypes.sizeof(demo.Message) + address_bytes)
+        self.assertGreaterEqual(layout[4], demo.DEVICE_ADDRESS_OFFSET + address_bytes)
         self.assertGreaterEqual(layout[3], layout[2] + 262144 * 656)
         first = list(demo.make_source_indices(32, 2026))
         second = list(demo.make_source_indices(32, 2026))
