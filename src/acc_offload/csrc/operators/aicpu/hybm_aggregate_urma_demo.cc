@@ -31,7 +31,8 @@ void FlushDeviceCache(uintptr_t address)
     __asm__ __volatile__("dsb ish" : : : "memory");
 }
 
-const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRouteTable *route, uint64_t mailbox)
+const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRouteTable *route, uint64_t mailbox,
+                                                     uint64_t mailboxBytes)
 {
     uintptr_t previousLine = 0U;
     for (uint16_t index = 0; index < route->header.rangeCount; ++index) {
@@ -42,7 +43,8 @@ const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRou
             InvalidateDeviceCache(line);
             previousLine = line;
         }
-        if (mailbox >= range->srcGvaBegin && mailbox + sizeof(HybmAggregateUrmaDemoMessage) <= range->srcGvaEnd) {
+        if (mailbox >= range->srcGvaBegin && mailbox <= range->srcGvaEnd &&
+            mailboxBytes <= range->srcGvaEnd - mailbox) {
             return range;
         }
     }
@@ -50,17 +52,21 @@ const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRou
 }
 
 uint32_t WriteRemoteRequestAndDoorbell(const ock::mf::BatchCopyPeerEntry &peer, uint64_t remote,
-                                       const HybmAggregateUrmaDemoMessage &message)
+                                       const HybmAggregateUrmaDemoMessage &message, const uint32_t *sourceIndices)
 {
     void *destinations[] = {reinterpret_cast<void *>(remote),
+                            reinterpret_cast<void *>(remote + sizeof(HybmAggregateUrmaDemoMessage)),
                             reinterpret_cast<void *>(remote + offsetof(HybmAggregateUrmaDemoMessage, doorbell))};
     void *sources[] = {const_cast<HybmAggregateUrmaDemoRequest *>(&message.request),
+                       const_cast<uint32_t *>(sourceIndices),
                        const_cast<uint64_t *>(&message.doorbell)};
-    uint64_t lengths[] = {sizeof(message.request), sizeof(message.doorbell)};
+    uint64_t lengths[] = {sizeof(message.request),
+                          static_cast<uint64_t>(message.request.segmentCount) * sizeof(uint32_t),
+                          sizeof(message.doorbell)};
     HybmOneSideOpParam write{};
     write.thread = peer.thread;
     write.channel = peer.channel;
-    write.list_num = 2U;
+    write.list_num = 3U;
     write.dst_buf_addr_list = destinations;
     write.src_buf_addr_list = sources;
     write.len_list = lengths;
@@ -143,7 +149,9 @@ uint32_t PublishRequest(HybmAggregateUrmaDemoParam *param)
 {
     const auto *route = reinterpret_cast<const ock::mf::BatchCopyRouteTable *>(ock::mf::HYBM_BATCH_COPY_META_ADDR);
     InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&route->header));
-    const auto *range = FindMailboxRange(route, param->message->request.hostMailboxGva);
+    const uint64_t indexBytes = static_cast<uint64_t>(param->message->request.segmentCount) * sizeof(uint32_t);
+    const uint64_t mailboxBytes = sizeof(HybmAggregateUrmaDemoMessage) + indexBytes;
+    const auto *range = FindMailboxRange(route, param->message->request.hostMailboxGva, mailboxBytes);
     if (range == nullptr) {
         HYBM_LOGE(BM_NOT_CONNECTED, "aggregate demo mailbox has no route, gva=0x%lx",
                   param->message->request.hostMailboxGva);
@@ -152,7 +160,7 @@ uint32_t PublishRequest(HybmAggregateUrmaDemoParam *param)
     const auto &peer = route->peers[range->peerIndex];
     InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&peer));
     const uint64_t remote = range->hcommVaBegin + param->message->request.hostMailboxGva - range->srcGvaBegin;
-    const auto ret = WriteRemoteRequestAndDoorbell(peer, remote, *param->message);
+    const auto ret = WriteRemoteRequestAndDoorbell(peer, remote, *param->message, param->sourceIndices);
     if (ret != BM_OK) {
         HYBM_LOGE(ret, "aggregate demo request and doorbell write failed, ret=%u", ret);
     }

@@ -26,7 +26,7 @@ from urma_example_common import (
 )
 
 
-CONTROL_BYTES = 3 * 4096
+DEVICE_INDEX_OFFSET = 3 * 4096
 POOL_ALIGN = 2 << 20
 DEFAULT_COUNTS = sorted({base * scale for base in (100, 200, 300, 400) for scale in (1, 2, 4, 8, 16, 32, 64)})
 DEFAULT_SIZES = (576, 656, 1152, 8192)
@@ -156,9 +156,9 @@ def make_layout(count, segment_bytes, source_pool_segments=0):
     total = count * segment_bytes
     stride = 2 * segment_bytes
     source_span = (source_pool_segments or count) * (segment_bytes if source_pool_segments else stride)
-    source = 4096
+    source = align_up(ctypes.sizeof(Message) + count * ctypes.sizeof(ctypes.c_uint32), 4096)
     aggregate = align_up(source + source_span, 4096)
-    dst_new = CONTROL_BYTES
+    dst_new = align_up(DEVICE_INDEX_OFFSET + count * ctypes.sizeof(ctypes.c_uint32), 4096)
     dst_base = align_up(dst_new + total, 4096)
     pool_bytes = align_up(max(aggregate + total, dst_base + count * stride), POOL_ALIGN)
     return total, stride, source, aggregate, dst_new, dst_base, pool_bytes
@@ -233,7 +233,7 @@ def make_source_indices(segment_count, seed):
 
 
 def gather_source_ordinal(args, round_index):
-    return round_index * args.segments % args.source_pool_segments
+    return round_index * args.segments % (args.source_pool_segments or args.segments)
 
 
 def total_iterations(args):
@@ -260,14 +260,10 @@ def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, source
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
     work_begin = time.perf_counter_ns()
-    if source_indices is None:
-        gather_ns = offload.aggregate_gather_range_demo(
-            source, aggregate, src_stride, segment_count, segment_bytes, args.gather_threads, args.gather_cpu_ids)
-    else:
-        gather_ns = offload.aggregate_gather_indexed_demo(
-            source, aggregate, ctypes.addressof(source_indices), args.source_pool_segments,
-            gather_source_ordinal(args, expected_doorbell - 1), segment_count, segment_bytes,
-            args.gather_threads, args.gather_cpu_ids)
+    source_pool_segments = args.source_pool_segments or args.segments
+    gather_ns = offload.aggregate_gather_indexed_demo(
+        source, aggregate, source_indices, source_pool_segments, 0, segment_count, segment_bytes,
+        args.gather_threads, args.gather_cpu_ids)
     write_ns = timed_copy(handle, bm, aggregate, dst_new_gva, total_bytes)
     work_ns = time.perf_counter_ns() - work_begin
     return ready_gva, total_bytes, gather_ns, write_ns, work_ns
@@ -288,9 +284,9 @@ def run_host(args, handle, bm, listener, layout):
     aggregate = host_va + aggregate_offset
     ctypes.memset(mailbox, 0, ctypes.sizeof(Message))
     source_count = args.source_pool_segments or args.segments
-    source_stride = args.segment_bytes if args.source_pool_segments else stride
+    source_stride = args.segment_bytes
     fill_source_pattern(source, source_stride, source_count, args.segment_bytes)
-    source_indices = make_source_indices(source_count, args.source_seed) if args.source_pool_segments else None
+    source_indices = mailbox + ctypes.sizeof(Message)
 
     from _pymf_acc_offload import offload
 
@@ -435,7 +431,8 @@ def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, read
         if source_indices is None:
             expected = index & 0xFF
         else:
-            ordinal = (gather_source_ordinal(args, round_index) + index) % args.source_pool_segments
+            source_pool_segments = args.source_pool_segments or args.segments
+            ordinal = (gather_source_ordinal(args, round_index) + index) % source_pool_segments
             expected = source_indices[ordinal] & 0xFF
         mismatch = next((offset for offset, value in enumerate(actual[begin:begin + args.segment_bytes])
                          if value != expected), None)
@@ -458,8 +455,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
     scatter_span = (args.segments - 1) * stride + args.segment_bytes
     readback = (ctypes.c_uint8 * scatter_span)() if args.verify else None
     poison = (ctypes.c_uint8 * scatter_span)() if args.verify else None
-    source_indices = (make_source_indices(args.source_pool_segments, args.source_seed)
-                      if args.source_pool_segments else None)
+    source_pool_segments = args.source_pool_segments or args.segments
+    source_indices = make_source_indices(source_pool_segments, args.source_seed)
     stages = {"launch sync": []}
     if timing_enabled:
         stages.update({name: [] for name in ("request publish", "wait host", "scatter copy", "publish barrier",
@@ -469,7 +466,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
                                           "libmf_hybm_accoffload.so"))
         launch = library.AccOffloadAggregateUrmaDemo
-        launch.argtypes = [ctypes.c_uint64] * 5 + [ctypes.c_uint16]
+        launch.argtypes = [ctypes.c_uint64] * 6 + [ctypes.c_uint16]
         launch.restype = ctypes.c_int32
         timing_and_sync_bytes = ctypes.sizeof(timing) + SYNC_BYTES
         copy_to_hbm(handle, bm, ctypes.addressof(timing), hbm_gva + 8192, timing_and_sync_bytes)
@@ -480,8 +477,15 @@ def run_npu(args, handle, bm, runtime_device, layout):
             message.doorbell = round_index + 1
             ready.value = 0
             stage_device_control(handle, bm, control, hbm_gva)
+            ordinal = gather_source_ordinal(args, round_index)
+            round_indices = (ctypes.c_uint32 * args.segments)(
+                *(source_indices[(ordinal + index) % source_pool_segments] for index in range(args.segments))
+            )
+            copy_to_hbm(handle, bm, ctypes.addressof(round_indices), hbm_gva + DEVICE_INDEX_OFFSET,
+                        ctypes.sizeof(round_indices))
             launch_begin = time.perf_counter_ns()
-            assert launch(hbm_va, hbm_va + 4096, hbm_va + dst_new_offset, hbm_va + dst_base_offset,
+            assert launch(hbm_va, hbm_va + DEVICE_INDEX_OFFSET, hbm_va + 4096,
+                          hbm_va + dst_new_offset, hbm_va + dst_base_offset,
                           hbm_va + 8192, runtime_device) == 0
             launch_end = time.perf_counter_ns()
             measured = is_measured_round(args, round_index)
@@ -685,7 +689,7 @@ def print_metric_descriptions():
         ("host", "Host 收到请求后的处理时间，包括 gather、URMA write、控制开销和 ready signal。"),
         ("gather", "Host 将随机离散源数据聚合到连续缓冲区的时间。"),
         ("write", "Host 将连续聚合缓冲区通过 URMA 写到 Device 临时缓冲区的时间。"),
-        ("request", "AICPU 查找路由并把 request 和 doorbell 发布到 Host 的时间。"),
+        ("request", "AICPU 查找路由并把 request、源索引表和 doorbell 发布到 Host 的时间。"),
         ("wait host", "AICPU 等待 Host ready signal 的时间；它包含 Host total，不能与 host 相加。"),
         ("scatter", "AICPU 将连续临时缓冲区分散写入目标地址并完成发布屏障的时间。"),
         ("publish", "scatter 数据复制后的 dsb ish 可见性屏障时间，已包含在 scatter 中。"),

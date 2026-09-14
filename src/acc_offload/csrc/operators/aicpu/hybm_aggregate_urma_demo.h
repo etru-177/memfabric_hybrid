@@ -47,6 +47,7 @@ struct alignas(64) HybmAggregateUrmaDemoSync {
 
 struct HybmAggregateUrmaDemoParam {
     const HybmAggregateUrmaDemoMessage *message;
+    const uint32_t *sourceIndices;
     volatile uint64_t *ready;
     uint8_t *dstNew;
     uint8_t *dstBase;
