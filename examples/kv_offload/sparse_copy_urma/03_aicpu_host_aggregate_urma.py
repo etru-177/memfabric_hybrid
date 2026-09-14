@@ -235,6 +235,14 @@ def gather_source_ordinal(args, round_index):
     return round_index * args.segments % args.source_pool_segments
 
 
+def total_iterations(args):
+    return args.warmup_rounds + args.rounds
+
+
+def is_measured_round(args, round_index):
+    return round_index >= args.warmup_rounds
+
+
 def fill_destination_poison(destination, stride, segment_count, segment_bytes):
     ctypes.memset(destination, 0xA5, (segment_count - 1) * stride + segment_bytes)
     for index in range(segment_count):
@@ -297,12 +305,14 @@ def run_host(args, handle, bm, listener, layout):
     )
     with conn:
         conn.sendall(b"R")
-        for round_index in range(args.rounds):
+        for round_index in range(total_iterations(args)):
             expected_doorbell = round_index + 1
             ready_gva, _, gather_ns, write_ns, work_ns = run_host_round(
                 args, handle, bm, offload, mailbox, source, aggregate, source_indices, expected_doorbell
             )
             ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
+            if not is_measured_round(args, round_index):
+                continue
             stages["gather"].append(gather_ns)
             stages["URMA write"].append(write_ns)
             stages["host total"].append(work_ns + ready_ns)
@@ -312,7 +322,8 @@ def run_host(args, handle, bm, listener, layout):
         return stages
     stage_bytes = {name: total for name in stages}
     print_timing_summary(
-        f"Host summary: rounds={args.rounds}, gather_threads={args.gather_threads}, bytes/round={total}",
+        f"Host summary: warmup={args.warmup_rounds}, rounds={args.rounds}, "
+        f"gather_threads={args.gather_threads}, bytes/round={total}",
         stages,
         stage_bytes,
     )
@@ -364,7 +375,7 @@ def run_direct_npu(args, handle, bm, runtime_device, layout):
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         if conn.recv(1) != b"R":
             raise RuntimeError("direct host did not publish source readiness")
-        for round_index in range(args.rounds):
+        for round_index in range(total_iterations(args)):
             if args.verify:
                 fill_destination_poison(ctypes.addressof(poison), stride, args.segments, args.segment_bytes)
                 copy_to_hbm(handle, bm, ctypes.addressof(poison), hbm_gva + dst_offset, span)
@@ -373,12 +384,17 @@ def run_direct_npu(args, handle, bm, runtime_device, layout):
             elapsed = time.perf_counter_ns() - begin
             if ret != 0:
                 raise RuntimeError(f"direct batch read failed: round={round_index}, ret={ret}")
-            stages["launch sync"].append(elapsed)
+            if is_measured_round(args, round_index):
+                stages["launch sync"].append(elapsed)
             if args.verify:
                 verify_scatter(handle, bm, hbm_gva, dst_offset, args, round_index, readback)
         conn.sendall(b"D")
     if not getattr(args, "result_file", None):
-        print_timing_summary("Direct batch read", stages, {"launch sync": total})
+        print_timing_summary(
+            f"Direct batch read: warmup={args.warmup_rounds}, rounds={args.rounds}",
+            stages,
+            {"launch sync": total},
+        )
         if args.verify:
             print(f"Direct verification: PASS ({args.rounds} rounds)")
     return stages
@@ -454,7 +470,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
         launch = library.AccOffloadAggregateUrmaDemo
         launch.argtypes = [ctypes.c_uint64] * 5 + [ctypes.c_uint16]
         launch.restype = ctypes.c_int32
-        for round_index in range(args.rounds):
+        for round_index in range(total_iterations(args)):
             if args.verify:
                 fill_destination_poison(ctypes.addressof(poison), stride, args.segments, args.segment_bytes)
                 copy_to_hbm(handle, bm, ctypes.addressof(poison), hbm_gva + dst_base_offset, scatter_span)
@@ -465,11 +481,14 @@ def run_npu(args, handle, bm, runtime_device, layout):
             assert launch(hbm_va, hbm_va + 4096, hbm_va + dst_new_offset, hbm_va + dst_base_offset,
                           hbm_va + 8192, runtime_device) == 0
             launch_end = time.perf_counter_ns()
-            stages["launch sync"].append(launch_end - launch_begin)
+            measured = is_measured_round(args, round_index)
+            if measured:
+                stages["launch sync"].append(launch_end - launch_begin)
             if args.verify:
                 verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback, source_indices)
-            timing_due = timing_enabled and (round_index + 1) % args.device_timing_every == 0
-            if timing_due or (timing_enabled and round_index + 1 == args.rounds):
+            measured_index = round_index - args.warmup_rounds + 1
+            timing_due = measured and timing_enabled and measured_index % args.device_timing_every == 0
+            if timing_due or (measured and timing_enabled and measured_index == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
                                         bm.BmCopyType.G2H, 0) == 0
                 record_device_timing(stages, timing, launch_end - launch_begin)
@@ -479,7 +498,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
     stage_bytes = {name: total for name in ("launch sync", "scatter copy", "scatter total", "AICPU e2e")}
     timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
     print_timing_summary(
-        f"Device summary: rounds={args.rounds}, timing_samples={timing_samples}, bytes/round={total}",
+        f"Device summary: warmup={args.warmup_rounds}, rounds={args.rounds}, "
+        f"timing_samples={timing_samples}, bytes/round={total}",
         stages,
         stage_bytes,
     )
@@ -499,6 +519,8 @@ def parse_args():
     parser.add_argument("--segments", type=int, nargs="+", default=DEFAULT_COUNTS)
     parser.add_argument("--segment-bytes", type=int, nargs="+", default=DEFAULT_SIZES)
     parser.add_argument("--rounds", type=int, default=1000)
+    parser.add_argument("--warmup-rounds", type=int, default=10,
+                        help="iterations executed before performance samples are recorded")
     parser.add_argument("--case-timeout", type=float, default=600,
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
@@ -522,6 +544,8 @@ def parse_args():
     args = parser.parse_args()
     if min(args.segments) <= 0 or min(args.segment_bytes) <= 0 or args.rounds <= 0:
         parser.error("--segments, --segment-bytes and --rounds must be positive")
+    if args.warmup_rounds < 0:
+        parser.error("--warmup-rounds must be non-negative")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
     if args.source_pool_segments < 0 or (args.source_pool_segments and
@@ -678,7 +702,8 @@ def run_suite(args):
     metric_names = ("launch sync", "host total", "gather", "URMA write", "request publish", "wait host",
                     "scatter total", "publish barrier", "AICPU e2e", "launch overhead")
     sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
-    print(f"rounds/case={args.rounds}, cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
+    print(f"warmup/case={args.warmup_rounds}, rounds/case={args.rounds}, "
+          f"cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
     try:
         for size in sizes:
             for count in counts:

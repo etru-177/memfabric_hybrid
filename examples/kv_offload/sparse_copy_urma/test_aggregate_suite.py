@@ -70,6 +70,7 @@ class AggregateSuiteTest(unittest.TestCase):
         with patch("sys.argv", ["demo"]):
             args = demo.parse_args()
         self.assertEqual(args.rounds, 1000)
+        self.assertEqual(args.warmup_rounds, 10)
         self.assertEqual(args.segments, sorted({b * m for b in (100, 200, 300, 400)
                                               for m in (1, 2, 4, 8, 16, 32, 64)}))
         self.assertEqual(args.segments[-1], 25600)
@@ -89,6 +90,17 @@ class AggregateSuiteTest(unittest.TestCase):
                                 "--source-pool-segments", "100"]):
             with self.assertRaises(SystemExit):
                 demo.parse_args()
+
+    def test_warmup_rounds_must_be_non_negative(self):
+        with patch("sys.argv", ["demo", "--warmup-rounds", "-1"]):
+            with self.assertRaises(SystemExit):
+                demo.parse_args()
+
+    def test_measured_round_range(self):
+        args = Mock(warmup_rounds=10, rounds=100)
+        self.assertEqual(demo.total_iterations(args), 110)
+        self.assertFalse(demo.is_measured_round(args, 9))
+        self.assertTrue(demo.is_measured_round(args, 10))
 
     def test_host_plugin_can_be_disabled(self):
         with patch("sys.argv", ["demo", "--no-host-nic-plugin"]):
