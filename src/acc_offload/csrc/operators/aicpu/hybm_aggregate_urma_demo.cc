@@ -18,6 +18,8 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint32_t kScatterLaneCount = 4U;
+constexpr uint32_t kPhaseReady = 1U;
+constexpr uint32_t kPhaseError = 2U;
 
 void InvalidateDeviceCache(uintptr_t address)
 {
@@ -159,14 +161,14 @@ uint32_t PublishRequest(HybmAggregateUrmaDemoParam *param)
     return ret;
 }
 
-uint32_t WaitUntilReady(const HybmAggregateUrmaDemoSync *sync, uint32_t generation)
+uint32_t WaitUntilReady(const HybmAggregateUrmaDemoSync *sync)
 {
     uint32_t phase = __atomic_load_n(&sync->phase, __ATOMIC_ACQUIRE);
-    while (phase != generation) {
+    while (phase == 0U) {
         __asm__ __volatile__("yield" : : : "memory");
         phase = __atomic_load_n(&sync->phase, __ATOMIC_ACQUIRE);
     }
-    return __atomic_load_n(&sync->error, __ATOMIC_ACQUIRE);
+    return phase == kPhaseReady ? BM_OK : __atomic_load_n(&sync->error, __ATOMIC_ACQUIRE);
 }
 
 void FinishLastLane(HybmAggregateUrmaDemoParam *param, uint64_t copied)
@@ -188,31 +190,34 @@ void FinishLastLane(HybmAggregateUrmaDemoParam *param, uint64_t copied)
 
 extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
 {
+    InvalidateDeviceCache(reinterpret_cast<uintptr_t>(param->timing));
     auto *sync = GetSync(param->timing);
-    const uint32_t laneTicket = __atomic_fetch_add(&sync->nextLane, 1U, __ATOMIC_ACQ_REL);
-    const uint32_t laneIndex = laneTicket % kScatterLaneCount;
-    const uint32_t generation = static_cast<uint32_t>(param->message->doorbell);
+    const uint32_t laneIndex = __atomic_fetch_add(&sync->nextLane, 1U, __ATOMIC_ACQ_REL);
+    if (laneIndex >= kScatterLaneCount) {
+        HYBM_LOGE(BM_ERROR, "aggregate demo received excess AICPU lane, laneIndex=%u", laneIndex);
+        return BM_ERROR;
+    }
     if (laneIndex == 0U) {
         param->timing->requestNs = NowNs();
         const auto ret = PublishRequest(param);
         param->timing->waitHostNs = NowNs();
-        __atomic_store_n(&sync->error, ret, __ATOMIC_RELEASE);
         if (ret != BM_OK) {
-            __atomic_store_n(&sync->phase, generation, __ATOMIC_RELEASE);
+            __atomic_store_n(&sync->error, ret, __ATOMIC_RELEASE);
+            __atomic_store_n(&sync->phase, kPhaseError, __ATOMIC_RELEASE);
             return ret;
         }
         WaitForHost(*param);
         param->timing->scatterCopyNs = NowNs();
-        __atomic_store_n(&sync->phase, generation, __ATOMIC_RELEASE);
+        __atomic_store_n(&sync->phase, kPhaseReady, __ATOMIC_RELEASE);
     } else {
-        const auto ret = WaitUntilReady(sync, generation);
+        const auto ret = WaitUntilReady(sync);
         if (ret != BM_OK) {
             return ret;
         }
     }
     ScatterPartition(*param, laneIndex);
     const uint32_t completed = __atomic_add_fetch(&sync->completedLanes, 1U, __ATOMIC_ACQ_REL);
-    if (completed % kScatterLaneCount == 0U) {
+    if (completed == kScatterLaneCount) {
         FinishLastLane(param, NowNs());
     }
     return BM_OK;
