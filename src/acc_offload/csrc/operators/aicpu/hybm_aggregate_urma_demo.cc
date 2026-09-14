@@ -101,7 +101,7 @@ uint64_t NowNs()
 
 HybmAggregateUrmaDemoSync *GetSync(HybmAggregateUrmaDemoTiming *timing)
 {
-    return reinterpret_cast<HybmAggregateUrmaDemoSync *>(timing->padding);
+    return reinterpret_cast<HybmAggregateUrmaDemoSync *>(timing + 1);
 }
 
 void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)

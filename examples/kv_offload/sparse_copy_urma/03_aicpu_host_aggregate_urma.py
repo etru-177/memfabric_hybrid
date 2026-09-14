@@ -62,7 +62,8 @@ class Timing(ctypes.Structure):
     ]
 
 
-CONTROL_STORAGE_BYTES = 2 * 4096 + ctypes.sizeof(Timing)
+SYNC_BYTES = 64
+CONTROL_STORAGE_BYTES = 2 * 4096 + ctypes.sizeof(Timing) + SYNC_BYTES
 PACKED_CONTROL_COPY_BYTES = 4096 + 64
 
 
@@ -470,7 +471,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
         launch = library.AccOffloadAggregateUrmaDemo
         launch.argtypes = [ctypes.c_uint64] * 5 + [ctypes.c_uint16]
         launch.restype = ctypes.c_int32
-        copy_to_hbm(handle, bm, ctypes.addressof(timing), hbm_gva + 8192, ctypes.sizeof(timing))
+        timing_and_sync_bytes = ctypes.sizeof(timing) + SYNC_BYTES
+        copy_to_hbm(handle, bm, ctypes.addressof(timing), hbm_gva + 8192, timing_and_sync_bytes)
         for round_index in range(total_iterations(args)):
             if args.verify:
                 fill_destination_poison(ctypes.addressof(poison), stride, args.segments, args.segment_bytes)

@@ -37,11 +37,12 @@ struct alignas(64) HybmAggregateUrmaDemoTiming {
     uint8_t padding[16];
 };
 
-struct HybmAggregateUrmaDemoSync {
+struct alignas(64) HybmAggregateUrmaDemoSync {
     uint32_t nextLane;
     uint32_t phase;
     uint32_t completedLanes;
     uint32_t error;
+    uint8_t padding[48];
 };
 
 struct HybmAggregateUrmaDemoParam {
@@ -56,7 +57,7 @@ static_assert(sizeof(HybmAggregateUrmaDemoRequest) == 64U);
 static_assert(offsetof(HybmAggregateUrmaDemoMessage, doorbell) == 64U);
 static_assert(sizeof(HybmAggregateUrmaDemoMessage) == 128U);
 static_assert(sizeof(HybmAggregateUrmaDemoTiming) == 64U);
-static_assert(sizeof(HybmAggregateUrmaDemoSync) == 16U);
+static_assert(sizeof(HybmAggregateUrmaDemoSync) == 64U);
 
 extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param);
 
