@@ -404,6 +404,17 @@ def stage_device_control(handle, bm, control, hbm_gva):
     copy_to_hbm(handle, bm, ctypes.addressof(control), hbm_gva, PACKED_CONTROL_COPY_BYTES)
 
 
+def record_device_timing(stages, timing, launch_ns):
+    stages["request publish"].append(timing.request_ns)
+    stages["wait host"].append(timing.wait_host_ns)
+    stages["scatter copy"].append(timing.scatter_copy_ns)
+    stages["publish barrier"].append(timing.scatter_publish_ns)
+    stages["scatter total"].append(timing.scatter_ns)
+    stages["AICPU control"].append(max(0, timing.total_ns - timing.wait_host_ns - timing.scatter_ns))
+    stages["AICPU e2e"].append(timing.total_ns)
+    stages["launch overhead"].append(max(0, launch_ns - timing.total_ns))
+
+
 def verify_scatter(handle, bm, hbm_gva, dst_base_offset, args, round_index, readback, source_indices=None):
     span = (args.segments - 1) * (2 * args.segment_bytes) + args.segment_bytes
     assert handle.copy_data(hbm_gva + dst_base_offset, ctypes.addressof(readback), span,
@@ -442,7 +453,8 @@ def run_npu(args, handle, bm, runtime_device, layout):
                       if args.source_pool_segments else None)
     stages = {"launch sync": []}
     if timing_enabled:
-        stages.update({"scatter copy": [], "publish barrier": [], "scatter total": [], "AICPU e2e": []})
+        stages.update({name: [] for name in ("request publish", "wait host", "scatter copy", "publish barrier",
+                                             "scatter total", "AICPU control", "AICPU e2e", "launch overhead")})
     with socket.create_connection((args.head_ip, args.ctrl_port)) as conn:
         conn.recv(1)
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
@@ -468,14 +480,11 @@ def run_npu(args, handle, bm, runtime_device, layout):
             if timing_due or (timing_enabled and round_index + 1 == args.rounds):
                 assert handle.copy_data(hbm_gva + 8192, ctypes.addressof(timing), ctypes.sizeof(timing),
                                         bm.BmCopyType.G2H, 0) == 0
-                stages["scatter copy"].append(timing.scatter_copy_ns)
-                stages["publish barrier"].append(timing.scatter_publish_ns)
-                stages["scatter total"].append(timing.scatter_ns)
-                stages["AICPU e2e"].append(timing.total_ns)
+                record_device_timing(stages, timing, launch_end - launch_begin)
         conn.sendall(b"D")
     if getattr(args, "result_file", None):
         return stages
-    stage_bytes = {"launch sync": total, "scatter copy": total, "scatter total": total, "AICPU e2e": total}
+    stage_bytes = {name: total for name in ("launch sync", "scatter copy", "scatter total", "AICPU e2e")}
     timing_samples = len(stages["AICPU e2e"]) if timing_enabled else 0
     print_timing_summary(
         f"Device summary: rounds={args.rounds}, timing_samples={timing_samples}, bytes/round={total}",

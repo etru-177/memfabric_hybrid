@@ -181,6 +181,16 @@ class AggregateSuiteTest(unittest.TestCase):
         demo.fill_source_pattern(ctypes.addressof(source), 8, 2, 4)
         demo.verify_scatter(handle, bm, ctypes.addressof(source), 0, args, 0, readback)
 
+    def test_device_timing_breakdown(self):
+        names = ("request publish", "wait host", "scatter copy", "publish barrier", "scatter total",
+                 "AICPU control", "AICPU e2e", "launch overhead")
+        stages = {name: [] for name in names}
+        timing = Mock(request_ns=10, wait_host_ns=80, scatter_copy_ns=250, scatter_publish_ns=40,
+                      scatter_ns=290, total_ns=400)
+        demo.record_device_timing(stages, timing, 500)
+        self.assertEqual(stages["AICPU control"], [30])
+        self.assertEqual(stages["launch overhead"], [100])
+
 
 if __name__ == "__main__":
     unittest.main()
