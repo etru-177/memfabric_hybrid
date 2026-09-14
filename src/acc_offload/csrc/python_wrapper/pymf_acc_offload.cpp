@@ -36,8 +36,6 @@ namespace py = pybind11;
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint32_t PREFETCH_DISTANCE = 4;
-constexpr uint32_t CACHE_LINE_BYTES = 64;
-std::atomic<uint64_t> g_cacheEvictionSink{0};
 
 inline void CpuRelax()
 {
@@ -131,20 +129,7 @@ struct GatherTask {
     const uint32_t *sourceIndices;
     uint32_t sourcePoolSegments;
     uint64_t sourceOrdinal;
-    uint64_t evictionBytes;
 };
-
-void EvictCachePartition(const GatherTask &task, uint32_t threadIndex)
-{
-    const uint64_t begin = task.evictionBytes * threadIndex / task.threadCount;
-    const uint64_t end = task.evictionBytes * (threadIndex + 1U) / task.threadCount;
-    const auto *buffer = reinterpret_cast<const volatile uint8_t *>(task.src);
-    uint64_t checksum = 0;
-    for (uint64_t offset = begin; offset < end; offset += CACHE_LINE_BYTES) {
-        checksum += buffer[offset];
-    }
-    g_cacheEvictionSink.fetch_add(checksum, std::memory_order_relaxed);
-}
 
 template <size_t Bytes>
 void GatherIndexedFixed(uint8_t *dst, const uint8_t *src, const GatherTask &task, uint32_t begin, uint32_t end)
@@ -182,10 +167,6 @@ void GatherIndexed(const GatherTask &task, uint32_t begin, uint32_t end)
 
 void GatherPartition(const GatherTask &task, uint32_t threadIndex)
 {
-    if (task.evictionBytes != 0U) {
-        EvictCachePartition(task, threadIndex);
-        return;
-    }
     const uint32_t segmentsPerCacheLine = 64U / std::gcd(64U, task.request.segmentBytes);
     const auto partitionBoundary = [&task, segmentsPerCacheLine](uint32_t index) {
         if (index == task.threadCount) {
@@ -247,22 +228,7 @@ public:
                generation_.load(std::memory_order_relaxed) != 0U) {
             CpuRelax();
         }
-        task_ = {dst, src, request, threadCount_, sourceIndices, sourcePoolSegments, sourceOrdinal, 0U};
-        done_.store(0U, std::memory_order_relaxed);
-        generation_.fetch_add(1U, std::memory_order_release);
-        while (done_.load(std::memory_order_acquire) != threadCount_ + 1U) {
-            CpuRelax();
-        }
-    }
-
-    void Evict(const uint8_t *buffer, uint64_t bytes)
-    {
-        HybmAggregateUrmaDemoRequest request{};
-        while (done_.load(std::memory_order_acquire) != threadCount_ + 1U &&
-               generation_.load(std::memory_order_relaxed) != 0U) {
-            CpuRelax();
-        }
-        task_ = {nullptr, buffer, request, threadCount_, nullptr, 0U, 0U, bytes};
+        task_ = {dst, src, request, threadCount_, sourceIndices, sourcePoolSegments, sourceOrdinal};
         done_.store(0U, std::memory_order_relaxed);
         generation_.fetch_add(1U, std::memory_order_release);
         while (done_.load(std::memory_order_acquire) != threadCount_ + 1U) {
@@ -389,17 +355,6 @@ uint64_t AggregateGatherIndexedDemo(uint64_t source, uint64_t aggregate, uint64_
     return gatherNs;
 }
 
-void AggregateEvictCacheDemo(uint64_t buffer, uint64_t bytes, uint32_t gatherThreads,
-                             const std::vector<int> &configuredCpus)
-{
-    if (buffer == 0U || bytes == 0U || gatherThreads == 0U || gatherThreads > 64U) {
-        throw py::value_error("buffer, bytes and gatherThreads must be positive; gatherThreads must not exceed 64");
-    }
-    auto &threadPool = GetGatherThreadPool(gatherThreads, configuredCpus);
-    py::gil_scoped_release release;
-    threadPool.Evict(reinterpret_cast<const uint8_t *>(buffer), bytes);
-}
-
 void DefineAccOffloadConfig(py::module_ &m)
 {
     py::enum_<offload_scene_t>(m, "Scene")
@@ -448,9 +403,6 @@ void DefineAccOffloadApi(py::module_ &m)
           py::arg("sourceIndices"), py::arg("sourcePoolSegments"), py::arg("sourceOrdinal"),
           py::arg("segmentCount"), py::arg("segmentBytes"), py::arg("gatherThreads") = 1U,
           py::arg("configuredCpus") = std::vector<int>{});
-
-    m.def("aggregate_evict_cache_demo", &AggregateEvictCacheDemo, py::arg("buffer"), py::arg("bytes"),
-          py::arg("gatherThreads") = 1U, py::arg("configuredCpus") = std::vector<int>{});
 
     m.def("npu_kvcache_scatter_copy", &offload_kvcache_scatter_copy, py::call_guard<py::gil_scoped_release>(),
           py::arg("hbmKpe"), py::arg("hbmCkv"), py::arg("hbmBlockTable"), py::arg("dramBlockTable"),

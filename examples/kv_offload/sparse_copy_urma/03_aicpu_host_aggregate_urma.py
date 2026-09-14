@@ -241,8 +241,7 @@ def fill_destination_poison(destination, stride, segment_count, segment_bytes):
         ctypes.memset(destination + index * stride, (index & 0xFF) ^ 0xFF, segment_bytes)
 
 
-def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, source_indices, eviction,
-                   expected_doorbell):
+def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, source_indices, expected_doorbell):
     result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
     expected_total = args.segments * args.segment_bytes
@@ -251,9 +250,6 @@ def run_host_round(args, handle, bm, offload, mailbox, source, aggregate, source
         expected_total, expected_stride, args.segments, args.segment_bytes)
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
-    if eviction is not None:
-        offload.aggregate_evict_cache_demo(
-            ctypes.addressof(eviction), ctypes.sizeof(eviction), args.gather_threads, args.gather_cpu_ids)
     work_begin = time.perf_counter_ns()
     if source_indices is None:
         gather_ns = offload.aggregate_gather_range_demo(
@@ -286,9 +282,6 @@ def run_host(args, handle, bm, listener, layout):
     source_stride = args.segment_bytes if args.source_pool_segments else stride
     fill_source_pattern(source, source_stride, source_count, args.segment_bytes)
     source_indices = make_source_indices(source_count, args.source_seed) if args.source_pool_segments else None
-    eviction = (ctypes.c_uint8 * (args.cold_cache_mib * 1024 * 1024))() if args.cold_cache_mib else None
-    if eviction is not None:
-        ctypes.memset(ctypes.addressof(eviction), 1, ctypes.sizeof(eviction))
 
     from _pymf_acc_offload import offload
 
@@ -307,7 +300,7 @@ def run_host(args, handle, bm, listener, layout):
         for round_index in range(args.rounds):
             expected_doorbell = round_index + 1
             ready_gva, _, gather_ns, write_ns, work_ns = run_host_round(
-                args, handle, bm, offload, mailbox, source, aggregate, source_indices, eviction, expected_doorbell
+                args, handle, bm, offload, mailbox, source, aggregate, source_indices, expected_doorbell
             )
             ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
             stages["gather"].append(gather_ns)
@@ -514,8 +507,6 @@ def parse_args():
                         help="dense Host token pool size; 0 keeps the fixed strided source addresses")
     parser.add_argument("--source-seed", type=int, default=2026,
                         help="seed for the source-pool permutation")
-    parser.add_argument("--cold-cache-mib", type=int, default=0,
-                        help="MiB scanned by gather workers before each timed gather; 0 disables cache eviction")
     parser.add_argument("--gather-cpus", help="dedicated gather worker CPUs; must be a subset of Host CPUs")
     parser.add_argument("--host-cpus", help="Host process CPU list, for example 48-63")
     parser.add_argument("--device-cpus", help="Device process CPU list, for example 64-71")
@@ -537,8 +528,6 @@ def parse_args():
     if args.source_pool_segments < 0 or (args.source_pool_segments and
                                         args.source_pool_segments < max(args.segments)):
         parser.error("--source-pool-segments must be 0 or at least the largest --segments value")
-    if args.cold_cache_mib < 0:
-        parser.error("--cold-cache-mib must be non-negative")
     if args.device_timing_every < 0:
         parser.error("--device-timing-every must be non-negative")
     if not math.isfinite(args.case_timeout) or args.case_timeout <= 0:
