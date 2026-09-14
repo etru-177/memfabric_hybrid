@@ -156,9 +156,10 @@ def make_layout(count, segment_bytes, source_pool_segments=0):
     total = count * segment_bytes
     stride = 2 * segment_bytes
     source_span = (source_pool_segments or count) * (segment_bytes if source_pool_segments else stride)
-    source = align_up(ctypes.sizeof(Message) + count * ctypes.sizeof(ctypes.c_uint64), 4096)
+    wire_bytes = count * ctypes.sizeof(ctypes.c_uint64) + ctypes.sizeof(Request) + ctypes.sizeof(ctypes.c_uint64)
+    source = align_up(wire_bytes, 4096)
     aggregate = align_up(source + source_span, 4096)
-    dst_new = align_up(DEVICE_ADDRESS_OFFSET + count * ctypes.sizeof(ctypes.c_uint64), 4096)
+    dst_new = align_up(DEVICE_ADDRESS_OFFSET + wire_bytes, 4096)
     dst_base = align_up(dst_new + total, 4096)
     pool_bytes = align_up(max(aggregate + total, dst_base + count * stride), POOL_ALIGN)
     return total, stride, source, aggregate, dst_new, dst_base, pool_bytes
@@ -250,8 +251,9 @@ def fill_destination_poison(destination, stride, segment_count, segment_bytes):
         ctypes.memset(destination + index * stride, (index & 0xFF) ^ 0xFF, segment_bytes)
 
 
-def run_host_round(args, handle, bm, offload, mailbox, aggregate, gva_to_va_offset, expected_doorbell):
-    result = offload.aggregate_wait_demo(mailbox, expected_doorbell)
+def run_host_round(args, handle, bm, offload, message, source_addresses, aggregate, gva_to_va_offset,
+                   expected_doorbell):
+    result = offload.aggregate_wait_demo(message, expected_doorbell)
     dst_new_gva, ready_gva, total_bytes, src_stride, segment_count, segment_bytes, _ = result
     expected_total = args.segments * args.segment_bytes
     expected_stride = 2 * args.segment_bytes
@@ -260,7 +262,6 @@ def run_host_round(args, handle, bm, offload, mailbox, aggregate, gva_to_va_offs
     if not layout_matches:
         raise RuntimeError("device request layout does not match host arguments")
     work_begin = time.perf_counter_ns()
-    source_addresses = mailbox + ctypes.sizeof(Message)
     gather_ns = offload.aggregate_gather_addresses_demo(
         aggregate, source_addresses, gva_to_va_offset, segment_count, segment_bytes,
         args.gather_threads, args.gather_cpu_ids)
@@ -269,9 +270,9 @@ def run_host_round(args, handle, bm, offload, mailbox, aggregate, gva_to_va_offs
     return ready_gva, total_bytes, gather_ns, write_ns, work_ns
 
 
-def signal_ready(handle, bm, mailbox, ready_gva):
+def signal_ready(handle, bm, message, ready_gva):
     begin = time.perf_counter_ns()
-    assert handle.copy_data(mailbox + Message.doorbell.offset, ready_gva, 8, bm.BmCopyType.H2G, 0) == 0
+    assert handle.copy_data(message + Message.doorbell.offset, ready_gva, 8, bm.BmCopyType.H2G, 0) == 0
     return time.perf_counter_ns() - begin
 
 
@@ -280,9 +281,11 @@ def run_host(args, handle, bm, listener, layout):
     host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
     host_va = handle.gva_to_va(host_gva, bm.BmMemType.LOCAL_HOST)
     mailbox = host_va
+    address_bytes = args.segments * ctypes.sizeof(ctypes.c_uint64)
+    mailbox_message = mailbox + address_bytes
     source = host_va + source_offset
     aggregate = host_va + aggregate_offset
-    ctypes.memset(mailbox, 0, ctypes.sizeof(Message))
+    ctypes.memset(mailbox, 0, address_bytes + ctypes.sizeof(Request) + ctypes.sizeof(ctypes.c_uint64))
     source_count = args.source_pool_segments or args.segments
     source_stride = args.segment_bytes
     fill_source_pattern(source, source_stride, source_count, args.segment_bytes)
@@ -305,8 +308,9 @@ def run_host(args, handle, bm, listener, layout):
         for round_index in range(total_iterations(args)):
             expected_doorbell = round_index + 1
             ready_gva, _, gather_ns, write_ns, work_ns = run_host_round(
-                args, handle, bm, offload, mailbox, aggregate, gva_to_va_offset, expected_doorbell)
-            ready_ns = signal_ready(handle, bm, mailbox, ready_gva)
+                args, handle, bm, offload, mailbox_message, mailbox, aggregate, gva_to_va_offset,
+                expected_doorbell)
+            ready_ns = signal_ready(handle, bm, mailbox_message, ready_gva)
             if not is_measured_round(args, round_index):
                 continue
             stages["gather"].append(gather_ns)
@@ -447,6 +451,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
     host_gva = handle.peer_rank_ptr(HOST_RANK, bm.BmMemType.HOST)
     hbm_gva = handle.peer_rank_ptr(NPU_RANK, bm.BmMemType.DEVICE)
     hbm_va = handle.gva_to_va(hbm_gva, bm.BmMemType.LOCAL_DEVICE)
+    address_bytes = args.segments * ctypes.sizeof(ctypes.c_uint64)
     request = Request(host_gva, hbm_gva + dst_new_offset, hbm_gva + 4096, total, stride, stride,
                       args.segments, args.segment_bytes, 0)
     control, message, ready, timing = make_device_control(request)
@@ -456,6 +461,11 @@ def run_npu(args, handle, bm, runtime_device, layout):
     poison = (ctypes.c_uint8 * scatter_span)() if args.verify else None
     source_pool_segments = args.source_pool_segments or args.segments
     source_indices = make_source_indices(source_pool_segments, args.source_seed)
+    wire_bytes = address_bytes + ctypes.sizeof(Request) + ctypes.sizeof(ctypes.c_uint64)
+    wire = (ctypes.c_uint8 * wire_bytes)()
+    wire_addresses = (ctypes.c_uint64 * args.segments).from_buffer(wire, 0)
+    ctypes.memmove(ctypes.addressof(wire) + address_bytes, ctypes.addressof(request), ctypes.sizeof(Request))
+    wire_doorbell = ctypes.c_uint64.from_buffer(wire, address_bytes + ctypes.sizeof(Request))
     stages = {"launch sync": []}
     if timing_enabled:
         stages.update({name: [] for name in ("request publish", "wait host", "scatter copy", "publish barrier",
@@ -474,18 +484,17 @@ def run_npu(args, handle, bm, runtime_device, layout):
                 fill_destination_poison(ctypes.addressof(poison), stride, args.segments, args.segment_bytes)
                 copy_to_hbm(handle, bm, ctypes.addressof(poison), hbm_gva + dst_base_offset, scatter_span)
             message.doorbell = round_index + 1
+            wire_doorbell.value = round_index + 1
             ready.value = 0
             stage_device_control(handle, bm, control, hbm_gva)
             ordinal = gather_source_ordinal(args, round_index)
-            round_addresses = (ctypes.c_uint64 * args.segments)(
-                *(host_gva + layout[2] +
-                  source_indices[(ordinal + index) % source_pool_segments] * args.segment_bytes
-                  for index in range(args.segments))
-            )
-            copy_to_hbm(handle, bm, ctypes.addressof(round_addresses), hbm_gva + DEVICE_ADDRESS_OFFSET,
-                        ctypes.sizeof(round_addresses))
+            for index in range(args.segments):
+                source_index = source_indices[(ordinal + index) % source_pool_segments]
+                wire_addresses[index] = host_gva + layout[2] + source_index * args.segment_bytes
+            copy_to_hbm(handle, bm, ctypes.addressof(wire), hbm_gva + DEVICE_ADDRESS_OFFSET, wire_bytes)
             launch_begin = time.perf_counter_ns()
-            assert launch(hbm_va, hbm_va + DEVICE_ADDRESS_OFFSET, hbm_va + 4096,
+            assert launch(hbm_va + DEVICE_ADDRESS_OFFSET + address_bytes, hbm_va + DEVICE_ADDRESS_OFFSET,
+                          hbm_va + 4096,
                           hbm_va + dst_new_offset, hbm_va + dst_base_offset,
                           hbm_va + 8192, runtime_device) == 0
             launch_end = time.perf_counter_ns()

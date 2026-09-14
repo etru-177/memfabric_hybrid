@@ -54,22 +54,17 @@ const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRou
 uint32_t WriteRemoteRequestAndDoorbell(const ock::mf::BatchCopyPeerEntry &peer, uint64_t remote,
                                        const HybmAggregateUrmaDemoMessage &message, const uint64_t *sourceAddresses)
 {
-    void *destinations[] = {reinterpret_cast<void *>(remote),
-                            reinterpret_cast<void *>(remote + sizeof(HybmAggregateUrmaDemoMessage)),
-                            reinterpret_cast<void *>(remote + offsetof(HybmAggregateUrmaDemoMessage, doorbell))};
-    void *sources[] = {const_cast<HybmAggregateUrmaDemoRequest *>(&message.request),
-                       const_cast<uint64_t *>(sourceAddresses),
-                       const_cast<uint64_t *>(&message.doorbell)};
-    uint64_t lengths[] = {sizeof(message.request),
-                          static_cast<uint64_t>(message.request.segmentCount) * sizeof(uint64_t),
-                          sizeof(message.doorbell)};
+    void *destination = reinterpret_cast<void *>(remote);
+    void *source = const_cast<uint64_t *>(sourceAddresses);
+    uint64_t length = static_cast<uint64_t>(message.request.segmentCount) * sizeof(uint64_t) +
+                      sizeof(HybmAggregateUrmaDemoRequest) + sizeof(message.doorbell);
     HybmOneSideOpParam write{};
     write.thread = peer.thread;
     write.channel = peer.channel;
-    write.list_num = 3U;
-    write.dst_buf_addr_list = destinations;
-    write.src_buf_addr_list = sources;
-    write.len_list = lengths;
+    write.list_num = 1U;
+    write.dst_buf_addr_list = &destination;
+    write.src_buf_addr_list = &source;
+    write.len_list = &length;
     return HybmBatchWriteStrict(&write);
 }
 
@@ -150,7 +145,7 @@ uint32_t PublishRequest(HybmAggregateUrmaDemoParam *param)
     const auto *route = reinterpret_cast<const ock::mf::BatchCopyRouteTable *>(ock::mf::HYBM_BATCH_COPY_META_ADDR);
     InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&route->header));
     const uint64_t addressBytes = static_cast<uint64_t>(param->message->request.segmentCount) * sizeof(uint64_t);
-    const uint64_t mailboxBytes = sizeof(HybmAggregateUrmaDemoMessage) + addressBytes;
+    const uint64_t mailboxBytes = addressBytes + sizeof(HybmAggregateUrmaDemoRequest) + sizeof(uint64_t);
     const auto *range = FindMailboxRange(route, param->message->request.hostMailboxGva, mailboxBytes);
     if (range == nullptr) {
         HYBM_LOGE(BM_NOT_CONNECTED, "aggregate demo mailbox has no route, gva=0x%lx",
