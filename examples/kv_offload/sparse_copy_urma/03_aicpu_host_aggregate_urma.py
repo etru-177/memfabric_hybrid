@@ -124,9 +124,10 @@ def configure_device_affinity(cpu_list):
 
 def summarize(values):
     ordered = sorted(values)
+    p50 = ordered[math.ceil(len(ordered) * 0.50) - 1]
     p95 = ordered[math.ceil(len(ordered) * 0.95) - 1]
     p99 = ordered[math.ceil(len(ordered) * 0.99) - 1]
-    return sum(ordered) / len(ordered), ordered[0], ordered[-1], p95, p99
+    return sum(ordered) / len(ordered), ordered[0], ordered[-1], p50, p95, p99
 
 
 def print_table(title, headers, rows):
@@ -144,12 +145,13 @@ def print_table(title, headers, rows):
 def print_timing_summary(title, stage_samples, stage_bytes):
     rows = []
     for stage, samples in stage_samples.items():
-        average, minimum, maximum, p95, p99 = summarize(samples)
+        average, minimum, maximum, p50, p95, p99 = summarize(samples)
         byte_count = stage_bytes.get(stage)
         bandwidth = "-" if byte_count is None else f"{byte_count * 1e9 / average / (1024 ** 3):.3f}"
         rows.append((stage, f"{average / 1e3:.3f}", f"{minimum / 1e3:.3f}", f"{maximum / 1e3:.3f}",
-                     f"{p95 / 1e3:.3f}", f"{p99 / 1e3:.3f}", bandwidth))
-    print_table(title, ("stage", "avg(us)", "min(us)", "max(us)", "P95(us)", "P99(us)", "GiB/s"), rows)
+                     f"{p50 / 1e3:.3f}", f"{p95 / 1e3:.3f}", f"{p99 / 1e3:.3f}", bandwidth))
+    print_table(title, ("stage", "avg(us)", "min(us)", "max(us)", "P50(us)", "P95(us)", "P99(us)",
+                        "GiB/s"), rows)
 
 
 def make_layout(count, segment_bytes, source_pool_segments=0):
@@ -602,7 +604,7 @@ def run_role(args, listener=None):
     mf.uninitialize()
     if getattr(args, "result_file", None):
         with open(args.result_file, "w", encoding="utf-8") as output:
-            json.dump({name: sum(samples) / len(samples) for name, samples in stages.items()}, output)
+            json.dump(stages, output)
 
 
 def case_worker(args, log_path, listener=None):
@@ -694,18 +696,12 @@ def print_metric_descriptions():
     descriptions = (
         ("bytes/pkt", "每个离散数据包的字节数。"),
         ("packets", "每轮聚合和分散的数据包数量。"),
-        ("MiB", "每轮有效搬运的数据量。"),
-        ("E2E", "Device 侧 launch 接口调用到同步返回的总时延，即 launch sync。"),
-        ("host", "Host 收到请求后的处理时间，包括 gather、URMA write、控制开销和 ready signal。"),
-        ("gather", "Host 将随机离散源数据聚合到连续缓冲区的时间。"),
-        ("write", "Host 将连续聚合缓冲区通过 URMA 写到 Device 临时缓冲区的时间。"),
+        ("E2E", "逐轮 request、host gather、host write、scatter 和 launch ovh 之和。"),
         ("request", "AICPU 查找路由并把 request、源GVA地址表和 doorbell 发布到 Host 的时间。"),
-        ("wait host", "AICPU 等待 Host ready signal 的时间；它包含 Host total，不能与 host 相加。"),
+        ("host gather", "Host 按Device下发的GVA地址表将离散数据聚合到连续缓冲区的时间。"),
+        ("host write", "Host 将连续聚合缓冲区通过URMA写到Device临时缓冲区的时间。"),
         ("scatter", "AICPU 将连续临时缓冲区分散写入目标地址并完成发布屏障的时间。"),
-        ("publish", "scatter 数据复制后的 dsb ish 可见性屏障时间，已包含在 scatter 中。"),
-        ("AICPU e2e", "AICPU kernel 内部总时间，等于 request、wait host 和 scatter 之和。"),
-        ("launch ovh", "E2E 减去 AICPU e2e，主要是运行时下发、调度、退出和同步开销。"),
-        ("E2E GiB/s", "每轮有效字节数除以 E2E 时延得到的端到端带宽。"),
+        ("launch ovh", "launch接口中未被AICPU内部计时覆盖的下发、调度、退出和同步开销。"),
     )
     width = max(len(name) for name, _ in descriptions)
     print("Metric descriptions (included stages must not be added twice):")
@@ -713,11 +709,43 @@ def print_metric_descriptions():
         print(f"  {name.ljust(width)} : {description}")
 
 
+def measured_timing_positions(rounds, every):
+    return [index for index in range(rounds) if (index + 1) % every == 0 or index + 1 == rounds]
+
+
+def aggregate_summary_samples(result, rounds, timing_every):
+    if timing_every <= 0:
+        raise RuntimeError("aggregate summary requires --device-timing-every greater than zero")
+    names = ("request publish", "gather", "URMA write", "scatter total", "launch overhead")
+    positions = measured_timing_positions(rounds, timing_every)
+    samples = {}
+    for name in names:
+        values = result[name]
+        if name in ("gather", "URMA write"):
+            values = [values[index] for index in positions]
+        samples[name] = values
+    sample_count = len(samples["request publish"])
+    if any(len(values) != sample_count for values in samples.values()):
+        raise RuntimeError("Host and Device timing sample counts do not match")
+    samples["E2E"] = [sum(samples[name][index] for name in names) for index in range(sample_count)]
+    return samples
+
+
+def append_summary_rows(rows, size, count, stage_samples):
+    display_names = (("E2E", "E2E"), ("request publish", "request"), ("gather", "host gather"),
+                     ("URMA write", "host write"), ("scatter total", "scatter"),
+                     ("launch overhead", "launch ovh"))
+    for key, label in display_names:
+        if key not in stage_samples:
+            continue
+        average, minimum, maximum, p50, p95, p99 = summarize(stage_samples[key])
+        rows.append((size, count, label, *(f"{value / 1e3:.3f}"
+                                            for value in (average, minimum, maximum, p50, p95, p99))))
+
+
 def run_suite(args):
     directory = tempfile.mkdtemp(prefix="mf_aggregate_suite_")
     rows = []
-    metric_names = ("launch sync", "host total", "gather", "URMA write", "request publish", "wait host",
-                    "scatter total", "publish barrier", "AICPU e2e", "launch overhead")
     sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
     print(f"warmup/case={args.warmup_rounds}, rounds/case={args.rounds}, "
           f"cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
@@ -732,19 +760,21 @@ def run_suite(args):
                 except Exception as error:
                     print_case_errors(case_dir)
                     raise RuntimeError(f"case {size}B x {count} failed; inspect {case_dir}: {error}") from error
-                rows.append((size, count, f"{size * count / (1024 ** 2):.3f}",
-                             *(f"{result[name] / 1000:.3f}" if name in result else "-" for name in
-                               metric_names),
-                             f"{size * count * 1e9 / result['launch sync'] / (1024 ** 3):.3f}"))
+                if args.mode == "aggregate":
+                    samples = aggregate_summary_samples(result, args.rounds, args.device_timing_every)
+                else:
+                    samples = {"E2E": result["launch sync"]}
+                append_summary_rows(rows, size, count, samples)
     finally:
         if rows:
-            print_table(f"{args.mode} copy summary (per-round means; E2E = launch sync; wait host includes Host; "
+            formula = ("request + host gather + host write + scatter + launch ovh"
+                       if args.mode == "aggregate" else "launch sync")
+            print_table(f"{args.mode} copy summary (E2E = {formula}; "
                         f"verify={'PASS' if args.verify else 'OFF'})",
-                        ("bytes/pkt", "packets", "MiB", "E2E(us)", "host(us)", "gather(us)",
-                         "write(us)", "request(us)", "wait host(us)", "scatter(us)", "publish(us)",
-                         "AICPU e2e(us)", "launch ovh(us)", "E2E GiB/s"), rows)
+                        ("bytes/pkt", "packets", "stage", "avg(us)", "min(us)", "max(us)", "P50(us)",
+                         "P95(us)", "P99(us)"), rows)
             print_metric_descriptions()
-        print(f"Full Host/Device logs and mean timings: {directory}", flush=True)
+        print(f"Full Host/Device logs and timing samples: {directory}", flush=True)
 
 
 def main():

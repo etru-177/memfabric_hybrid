@@ -36,7 +36,7 @@ class AggregateSuiteTest(unittest.TestCase):
         with patch("sys.argv", ["demo", "--mode", "direct", "--segments", "100", "--segment-bytes", "656"]):
             args = demo.parse_args()
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
-            with patch.object(demo, "run_case", return_value={"launch sync": 100000}):
+            with patch.object(demo, "run_case", return_value={"launch sync": [100000]}):
                 with contextlib.redirect_stdout(io.StringIO()) as out:
                     demo.run_suite(args)
         self.assertIn("direct copy summary", out.getvalue())
@@ -165,28 +165,32 @@ class AggregateSuiteTest(unittest.TestCase):
     def test_summary_and_deduplication(self):
         with patch("sys.argv", ["demo", "--segments", "100", "100", "200", "--segment-bytes", "656"]):
             args = demo.parse_args()
-        values = {"launch sync": 100000, "host total": 50000, "gather": 20000, "URMA write": 30000}
+        values = {"gather": [20000] * args.rounds, "URMA write": [30000] * args.rounds,
+                  "request publish": [10000] * args.rounds, "scatter total": [40000] * args.rounds,
+                  "launch overhead": [50000] * args.rounds}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
             with patch.object(demo, "run_case", return_value=values) as run, contextlib.redirect_stdout(io.StringIO()) as out:
                 demo.run_suite(args)
         self.assertEqual(run.call_count, 2)
         self.assertIn("100.000", out.getvalue())
-        self.assertIn("50.000", out.getvalue())
+        self.assertIn("150.000", out.getvalue())
 
     def test_suite_prints_device_overhead_in_main_table(self):
         with patch("sys.argv", ["demo", "--segments", "100", "--segment-bytes", "656"]):
             args = demo.parse_args()
-        values = {"launch sync": 500000, "AICPU e2e": 400000, "request publish": 10000,
-                  "wait host": 80000, "publish barrier": 40000, "launch overhead": 100000}
+        values = {"gather": [20000] * args.rounds, "URMA write": [30000] * args.rounds,
+                  "request publish": [10000] * args.rounds, "scatter total": [40000] * args.rounds,
+                  "launch overhead": [100000] * args.rounds}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp",
                                                                        return_value=directory):
             with patch.object(demo, "run_case", return_value=values), contextlib.redirect_stdout(io.StringIO()) as out:
                 demo.run_suite(args)
         self.assertNotIn("Device overhead breakdown", out.getvalue())
-        self.assertIn("request(us)", out.getvalue())
-        self.assertIn("launch ovh(us)", out.getvalue())
+        self.assertIn("request", out.getvalue())
+        self.assertIn("launch ovh", out.getvalue())
+        self.assertIn("P50(us)", out.getvalue())
         self.assertIn("Metric descriptions", out.getvalue())
-        self.assertIn("不能与 host 相加", out.getvalue())
+        self.assertIn("逐轮 request", out.getvalue())
 
     def test_poison_and_readback(self):
         args = Mock(segments=2, segment_bytes=4)
