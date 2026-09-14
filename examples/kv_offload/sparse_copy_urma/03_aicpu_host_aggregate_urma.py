@@ -664,7 +664,8 @@ def print_case_errors(directory):
 def run_suite(args):
     directory = tempfile.mkdtemp(prefix="mf_aggregate_suite_")
     rows = []
-    overhead_rows = []
+    metric_names = ("launch sync", "host total", "gather", "URMA write", "request publish", "wait host",
+                    "scatter total", "publish barrier", "AICPU control", "AICPU e2e", "launch overhead")
     sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
     print(f"rounds/case={args.rounds}, cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
     try:
@@ -680,23 +681,15 @@ def run_suite(args):
                     raise RuntimeError(f"case {size}B x {count} failed; inspect {case_dir}: {error}") from error
                 rows.append((size, count, f"{size * count / (1024 ** 2):.3f}",
                              *(f"{result[name] / 1000:.3f}" if name in result else "-" for name in
-                               ("launch sync", "host total", "gather", "URMA write")),
-                             f"{result['scatter total'] / 1000:.3f}" if "scatter total" in result else "-",
+                               metric_names),
                              f"{size * count * 1e9 / result['launch sync'] / (1024 ** 3):.3f}"))
-                if "AICPU e2e" in result:
-                    overhead_rows.append((size, count, *(f"{result[name] / 1000:.3f}" for name in
-                                           ("request publish", "wait host", "AICPU control", "publish barrier",
-                                            "AICPU e2e", "launch overhead"))))
     finally:
         if rows:
-            print_table(f"{args.mode} copy summary (per-round means; E2E = launch sync; "
+            print_table(f"{args.mode} copy summary (per-round means; E2E = launch sync; wait host includes Host; "
                         f"verify={'PASS' if args.verify else 'OFF'})",
                         ("bytes/pkt", "packets", "MiB", "E2E(us)", "host(us)", "gather(us)",
-                         "write(us)", "scatter(us)", "E2E GiB/s"), rows)
-        if overhead_rows:
-            print_table("Device overhead breakdown (per-round means; wait host includes Host processing)",
-                        ("bytes/pkt", "packets", "request(us)", "wait host(us)", "AICPU ctrl(us)",
-                         "publish(us)", "AICPU e2e(us)", "launch ovh(us)"), overhead_rows)
+                         "write(us)", "request(us)", "wait host(us)", "scatter(us)", "publish(us)",
+                         "AICPU ctrl(us)", "AICPU e2e(us)", "launch ovh(us)", "E2E GiB/s"), rows)
         print(f"Full Host/Device logs and mean timings: {directory}", flush=True)
 
 

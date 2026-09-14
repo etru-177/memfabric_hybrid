@@ -163,7 +163,7 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertIn("100.000", out.getvalue())
         self.assertIn("50.000", out.getvalue())
 
-    def test_suite_prints_device_overhead_breakdown(self):
+    def test_suite_prints_device_overhead_in_main_table(self):
         with patch("sys.argv", ["demo", "--segments", "100", "--segment-bytes", "656"]):
             args = demo.parse_args()
         values = {"launch sync": 500000, "AICPU e2e": 400000, "request publish": 10000,
@@ -173,7 +173,8 @@ class AggregateSuiteTest(unittest.TestCase):
                                                                        return_value=directory):
             with patch.object(demo, "run_case", return_value=values), contextlib.redirect_stdout(io.StringIO()) as out:
                 demo.run_suite(args)
-        self.assertIn("Device overhead breakdown", out.getvalue())
+        self.assertNotIn("Device overhead breakdown", out.getvalue())
+        self.assertIn("request(us)", out.getvalue())
         self.assertIn("launch ovh(us)", out.getvalue())
 
     def test_poison_and_readback(self):
