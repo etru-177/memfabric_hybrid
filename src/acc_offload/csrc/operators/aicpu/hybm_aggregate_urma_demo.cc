@@ -65,7 +65,7 @@ uint32_t WriteRemoteRequestAndDoorbell(const ock::mf::BatchCopyPeerEntry &peer, 
     write.dst_buf_addr_list = &destination;
     write.src_buf_addr_list = &source;
     write.len_list = &length;
-    return HybmBatchWriteStrict(&write);
+    return HybmWriteStrict(&write);
 }
 
 void WaitForHost(const HybmAggregateUrmaDemoParam &param)

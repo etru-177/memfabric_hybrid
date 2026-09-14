@@ -25,6 +25,8 @@ extern "C" {
 uint32_t HybmBatchWrite(HybmOneSideOpParam *param);
 // Requires one native HCOMM batch (list_num <= 1000) and does not use the single-write fallback.
 uint32_t HybmBatchWriteStrict(HybmOneSideOpParam *param);
+// Submits exactly one HCOMM write followed by one channel fence, without entering batch mode.
+uint32_t HybmWriteStrict(HybmOneSideOpParam *param);
 uint32_t HybmBatchRead(HybmOneSideOpParam *param);
 }
 

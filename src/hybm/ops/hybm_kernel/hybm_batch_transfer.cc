@@ -272,6 +272,26 @@ uint32_t HybmBatchWriteStrict(HybmOneSideOpParam *param)
     return ret;
 }
 
+uint32_t HybmWriteStrict(HybmOneSideOpParam *param)
+{
+    const uint32_t checkRet = CheckParam(param);
+    if (checkRet != BM_OK || param->list_num != 1U) {
+        HYBM_LOGE(BM_INVALID_PARAM, "strict single write requires listNum=1");
+        return BM_INVALID_PARAM;
+    }
+    const uint32_t writeRet = TransferWithSingle(false, param);
+    if (writeRet != BM_OK) {
+        return writeRet;
+    }
+    const auto fenceRet = static_cast<uint32_t>(ChannelFenceOnThread(param->thread, param->channel));
+    if (fenceRet != BM_OK) {
+        HYBM_LOGE(BM_ERROR, "strict single write fence failed, thread=%lu channel=%lu ret=%u", param->thread,
+                  param->channel, fenceRet);
+        return BM_ERROR;
+    }
+    return BM_OK;
+}
+
 uint32_t HybmBatchRead(HybmOneSideOpParam *param)
 {
     const uint32_t ret = HybmBatchTransfer(true, param, true);
