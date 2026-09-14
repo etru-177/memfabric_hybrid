@@ -661,6 +661,30 @@ def print_case_errors(directory):
             print(f"Cannot read log: {error}", flush=True)
 
 
+def print_metric_descriptions():
+    descriptions = (
+        ("bytes/pkt", "每个离散数据包的字节数。"),
+        ("packets", "每轮聚合和分散的数据包数量。"),
+        ("MiB", "每轮有效搬运的数据量。"),
+        ("E2E", "Device 侧 launch 接口调用到同步返回的总时延，即 launch sync。"),
+        ("host", "Host 收到请求后的处理时间，包括 gather、URMA write、控制开销和 ready signal。"),
+        ("gather", "Host 将随机离散源数据聚合到连续缓冲区的时间。"),
+        ("write", "Host 将连续聚合缓冲区通过 URMA 写到 Device 临时缓冲区的时间。"),
+        ("request", "AICPU 查找路由并把 request 和 doorbell 发布到 Host 的时间。"),
+        ("wait host", "AICPU 等待 Host ready signal 的时间；它包含 Host total，不能与 host 相加。"),
+        ("scatter", "AICPU 将连续临时缓冲区分散写入目标地址并完成发布屏障的时间。"),
+        ("publish", "scatter 数据复制后的 dsb ish 可见性屏障时间，已包含在 scatter 中。"),
+        ("AICPU ctrl", "AICPU e2e 减去 wait host 和 scatter；当前实现基本等于 request。"),
+        ("AICPU e2e", "AICPU kernel 内部总时间，等于 request、wait host 和 scatter 之和。"),
+        ("launch ovh", "E2E 减去 AICPU e2e，主要是运行时下发、调度、退出和同步开销。"),
+        ("E2E GiB/s", "每轮有效字节数除以 E2E 时延得到的端到端带宽。"),
+    )
+    width = max(len(name) for name, _ in descriptions)
+    print("Metric descriptions (included stages must not be added twice):")
+    for name, description in descriptions:
+        print(f"  {name.ljust(width)} : {description}")
+
+
 def run_suite(args):
     directory = tempfile.mkdtemp(prefix="mf_aggregate_suite_")
     rows = []
@@ -690,6 +714,7 @@ def run_suite(args):
                         ("bytes/pkt", "packets", "MiB", "E2E(us)", "host(us)", "gather(us)",
                          "write(us)", "request(us)", "wait host(us)", "scatter(us)", "publish(us)",
                          "AICPU ctrl(us)", "AICPU e2e(us)", "launch ovh(us)", "E2E GiB/s"), rows)
+            print_metric_descriptions()
         print(f"Full Host/Device logs and mean timings: {directory}", flush=True)
 
 

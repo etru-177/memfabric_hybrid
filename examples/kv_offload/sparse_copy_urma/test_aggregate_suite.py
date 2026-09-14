@@ -176,6 +176,8 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertNotIn("Device overhead breakdown", out.getvalue())
         self.assertIn("request(us)", out.getvalue())
         self.assertIn("launch ovh(us)", out.getvalue())
+        self.assertIn("Metric descriptions", out.getvalue())
+        self.assertIn("不能与 host 相加", out.getvalue())
 
     def test_poison_and_readback(self):
         args = Mock(segments=2, segment_bytes=4)
