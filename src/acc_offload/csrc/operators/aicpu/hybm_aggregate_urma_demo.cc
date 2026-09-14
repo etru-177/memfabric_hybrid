@@ -17,9 +17,11 @@
 
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr uint32_t kScatterLaneCount = 4U;
-constexpr uint32_t kPhaseReady = 1U;
-constexpr uint32_t kPhaseError = 2U;
+
+uint64_t ElapsedNs(Clock::time_point begin, Clock::time_point end)
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count());
+}
 
 void InvalidateDeviceCache(uintptr_t address)
 {
@@ -95,17 +97,6 @@ void ScatterFixed(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUr
     }
 }
 
-uint64_t NowNs()
-{
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
-}
-
-HybmAggregateUrmaDemoSync *GetSync(HybmAggregateUrmaDemoTiming *timing)
-{
-    return reinterpret_cast<HybmAggregateUrmaDemoSync *>(timing->padding);
-}
-
 void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
 {
     for (uint32_t index = 0; index < request.segmentCount; ++index) {
@@ -114,8 +105,9 @@ void ScatterDynamic(const HybmAggregateUrmaDemoParam &param, const HybmAggregate
     }
 }
 
-void Scatter(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDemoRequest &request)
+void Scatter(const HybmAggregateUrmaDemoParam &param)
 {
+    const auto &request = param.message->request;
     if (request.segmentBytes == 656U) {
         ScatterFixed<656>(param, request);
     } else if (request.segmentBytes == 576U) {
@@ -126,23 +118,11 @@ void Scatter(const HybmAggregateUrmaDemoParam &param, const HybmAggregateUrmaDem
         ScatterDynamic(param, request);
     }
 }
+} // namespace
 
-void ScatterPartition(const HybmAggregateUrmaDemoParam &param, uint32_t laneIndex)
+extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
 {
-    auto request = param.message->request;
-    const uint32_t begin = static_cast<uint32_t>(
-        static_cast<uint64_t>(request.segmentCount) * laneIndex / kScatterLaneCount);
-    const uint32_t end = static_cast<uint32_t>(
-        static_cast<uint64_t>(request.segmentCount) * (laneIndex + 1U) / kScatterLaneCount);
-    HybmAggregateUrmaDemoParam partition = param;
-    partition.dstNew += static_cast<uint64_t>(begin) * request.segmentBytes;
-    partition.dstBase += static_cast<uint64_t>(begin) * request.dstStride;
-    request.segmentCount = end - begin;
-    Scatter(partition, request);
-}
-
-uint32_t PublishRequest(HybmAggregateUrmaDemoParam *param)
-{
+    const auto begin = Clock::now();
     const auto *route = reinterpret_cast<const ock::mf::BatchCopyRouteTable *>(ock::mf::HYBM_BATCH_COPY_META_ADDR);
     InvalidateDeviceCache(reinterpret_cast<uintptr_t>(&route->header));
     const auto *range = FindMailboxRange(route, param->message->request.hostMailboxGva);
@@ -157,68 +137,21 @@ uint32_t PublishRequest(HybmAggregateUrmaDemoParam *param)
     const auto ret = WriteRemoteRequestAndDoorbell(peer, remote, *param->message);
     if (ret != BM_OK) {
         HYBM_LOGE(ret, "aggregate demo request and doorbell write failed, ret=%u", ret);
+        return ret;
     }
-    return ret;
-}
-
-uint32_t WaitUntilReady(const HybmAggregateUrmaDemoSync *sync)
-{
-    uint32_t phase = __atomic_load_n(&sync->phase, __ATOMIC_ACQUIRE);
-    while (phase == 0U) {
-        __asm__ __volatile__("yield" : : : "memory");
-        phase = __atomic_load_n(&sync->phase, __ATOMIC_ACQUIRE);
-    }
-    return phase == kPhaseReady ? BM_OK : __atomic_load_n(&sync->error, __ATOMIC_ACQUIRE);
-}
-
-void FinishLastLane(HybmAggregateUrmaDemoParam *param, uint64_t copied)
-{
+    const auto requested = Clock::now();
+    WaitForHost(*param);
+    const auto ready = Clock::now();
+    Scatter(*param);
+    const auto copied = Clock::now();
     __asm__ __volatile__("dsb ish" : : : "memory");
-    const uint64_t done = NowNs();
-    const uint64_t begin = param->timing->requestNs;
-    const uint64_t requested = param->timing->waitHostNs;
-    const uint64_t ready = param->timing->scatterCopyNs;
-    param->timing->requestNs = requested - begin;
-    param->timing->waitHostNs = ready - requested;
-    param->timing->scatterCopyNs = copied - ready;
-    param->timing->scatterPublishNs = done - copied;
-    param->timing->scatterNs = done - ready;
-    param->timing->totalNs = done - begin;
+    const auto done = Clock::now();
+    param->timing->requestNs = ElapsedNs(begin, requested);
+    param->timing->waitHostNs = ElapsedNs(requested, ready);
+    param->timing->scatterCopyNs = ElapsedNs(ready, copied);
+    param->timing->scatterPublishNs = ElapsedNs(copied, done);
+    param->timing->scatterNs = ElapsedNs(ready, done);
+    param->timing->totalNs = ElapsedNs(begin, done);
     FlushDeviceCache(reinterpret_cast<uintptr_t>(param->timing));
-}
-} // namespace
-
-extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
-{
-    InvalidateDeviceCache(reinterpret_cast<uintptr_t>(param->timing));
-    auto *sync = GetSync(param->timing);
-    const uint32_t laneIndex = __atomic_fetch_add(&sync->nextLane, 1U, __ATOMIC_ACQ_REL);
-    if (laneIndex >= kScatterLaneCount) {
-        HYBM_LOGE(BM_ERROR, "aggregate demo received excess AICPU lane, laneIndex=%u", laneIndex);
-        return BM_ERROR;
-    }
-    if (laneIndex == 0U) {
-        param->timing->requestNs = NowNs();
-        const auto ret = PublishRequest(param);
-        param->timing->waitHostNs = NowNs();
-        if (ret != BM_OK) {
-            __atomic_store_n(&sync->error, ret, __ATOMIC_RELEASE);
-            __atomic_store_n(&sync->phase, kPhaseError, __ATOMIC_RELEASE);
-            return ret;
-        }
-        WaitForHost(*param);
-        param->timing->scatterCopyNs = NowNs();
-        __atomic_store_n(&sync->phase, kPhaseReady, __ATOMIC_RELEASE);
-    } else {
-        const auto ret = WaitUntilReady(sync);
-        if (ret != BM_OK) {
-            return ret;
-        }
-    }
-    ScatterPartition(*param, laneIndex);
-    const uint32_t completed = __atomic_add_fetch(&sync->completedLanes, 1U, __ATOMIC_ACQ_REL);
-    if (completed == kScatterLaneCount) {
-        FinishLastLane(param, NowNs());
-    }
     return BM_OK;
 }

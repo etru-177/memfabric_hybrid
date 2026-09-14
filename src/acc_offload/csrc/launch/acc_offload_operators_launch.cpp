@@ -39,7 +39,6 @@ constexpr char kAggregateUrmaDemoFunctionName[] = "HybmAggregateUrmaDemo";
 constexpr char kBatchCopyFunctionName[] = "HybmBatchCopy";
 constexpr char kKvcacheScatterCopyFunctionName[] = "HybmKvcacheScatterCopy";
 constexpr uint32_t kKernelBlockDim = 1U;
-constexpr uint32_t kAggregateKernelBlockDim = 4U;
 constexpr uint16_t kKernelTimeoutSeconds = 120U;
 
 struct BatchCopyKernelCache {
@@ -274,7 +273,7 @@ int32_t LaunchAggregateUrmaDemoKernel(aclrtFuncHandle function, aclrtStream stre
     if (ret != BM_OK) {
         return ret;
     }
-    ret = aclrtLaunchKernelWithConfig(function, kAggregateKernelBlockDim, stream, nullptr, argsHandle, nullptr);
+    ret = aclrtLaunchKernelWithConfig(function, kKernelBlockDim, stream, nullptr, argsHandle, nullptr);
     if (ret != ACL_SUCCESS) {
         OFFLOAD_LOG_ERROR("launch aggregate URMA demo failed, deviceId: " << deviceId << " ret: " << ret);
         return BM_DL_FUNCTION_FAILED;
