@@ -130,16 +130,20 @@ def summarize(values):
     return sum(ordered) / len(ordered), ordered[0], ordered[-1], p50, p95, p99
 
 
-def print_table(title, headers, rows):
+def format_table(title, headers, rows):
     widths = [max(len(str(header)), *(len(str(row[index])) for row in rows)) for index, header in enumerate(headers)]
     separator = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-    print(title)
-    print(separator)
-    print("| " + " | ".join(str(header).ljust(widths[index]) for index, header in enumerate(headers)) + " |")
-    print(separator)
+    lines = [title, separator,
+             "| " + " | ".join(str(header).ljust(widths[index]) for index, header in enumerate(headers)) + " |",
+             separator]
     for row in rows:
-        print("| " + " | ".join(str(value).rjust(widths[index]) for index, value in enumerate(row)) + " |")
-    print(separator)
+        lines.append("| " + " | ".join(str(value).rjust(widths[index]) for index, value in enumerate(row)) + " |")
+    lines.append(separator)
+    return "\n".join(lines)
+
+
+def print_table(title, headers, rows):
+    print(format_table(title, headers, rows))
 
 
 def print_timing_summary(title, stage_samples, stage_bytes):
@@ -558,6 +562,8 @@ def parse_args():
     parser.set_defaults(force_host_nic_plugin=True)
     parser.add_argument("--device-timing-every", type=int, default=1,
                         help="fetch AICPU timing every N rounds; 0 disables timing G2H")
+    parser.add_argument("--stats-file", default="aggregate_latency_details.txt",
+                        help="detailed latency table output path; defaults to the current directory")
     parser.add_argument("--verify", action="store_true",
                         help="read back and verify every scatter round; excluded from launch timing")
     args = parser.parse_args()
@@ -692,7 +698,7 @@ def print_case_errors(directory):
             print(f"Cannot read log: {error}", flush=True)
 
 
-def print_metric_descriptions():
+def print_metric_descriptions(output=None):
     descriptions = (
         ("bytes/pkt", "每个离散数据包的字节数。"),
         ("packets", "每轮聚合和分散的数据包数量。"),
@@ -704,9 +710,9 @@ def print_metric_descriptions():
         ("launch ovh", "launch接口中未被AICPU内部计时覆盖的下发、调度、退出和同步开销。"),
     )
     width = max(len(name) for name, _ in descriptions)
-    print("Metric descriptions (included stages must not be added twice):")
+    print("Metric descriptions (included stages must not be added twice):", file=output)
     for name, description in descriptions:
-        print(f"  {name.ljust(width)} : {description}")
+        print(f"  {name.ljust(width)} : {description}", file=output)
 
 
 def measured_timing_positions(rounds, every):
@@ -769,11 +775,18 @@ def run_suite(args):
         if rows:
             formula = ("request + host gather + host write + scatter + launch ovh"
                        if args.mode == "aggregate" else "launch sync")
-            print_table(f"{args.mode} copy summary (E2E = {formula}; "
-                        f"verify={'PASS' if args.verify else 'OFF'})",
-                        ("bytes/pkt", "packets", "stage", "avg(us)", "min(us)", "max(us)", "P50(us)",
-                         "P95(us)", "P99(us)"), rows)
-            print_metric_descriptions()
+            title = (f"{args.mode} copy summary (E2E = {formula}; "
+                     f"verify={'PASS' if args.verify else 'OFF'})")
+            average_rows = [row[:4] for row in rows]
+            print_table(title, ("bytes/pkt", "packets", "stage", "avg(us)"), average_rows)
+            stats_path = os.path.abspath(args.stats_file)
+            with open(stats_path, "w", encoding="utf-8") as output:
+                output.write(format_table(title,
+                                          ("bytes/pkt", "packets", "stage", "avg(us)", "min(us)", "max(us)",
+                                           "P50(us)", "P95(us)", "P99(us)"), rows))
+                output.write("\n\n")
+                print_metric_descriptions(output)
+            print(f"Detailed latency statistics: {stats_path}", flush=True)
         print(f"Full Host/Device logs and timing samples: {directory}", flush=True)
 
 

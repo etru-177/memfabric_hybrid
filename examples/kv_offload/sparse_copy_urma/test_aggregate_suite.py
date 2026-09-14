@@ -7,6 +7,7 @@ import ctypes
 import importlib
 import io
 import multiprocessing
+import os
 import socket
 import tempfile
 import unittest
@@ -36,6 +37,7 @@ class AggregateSuiteTest(unittest.TestCase):
         with patch("sys.argv", ["demo", "--mode", "direct", "--segments", "100", "--segment-bytes", "656"]):
             args = demo.parse_args()
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
+            args.stats_file = os.path.join(directory, "stats.txt")
             with patch.object(demo, "run_case", return_value={"launch sync": [100000]}):
                 with contextlib.redirect_stdout(io.StringIO()) as out:
                     demo.run_suite(args)
@@ -169,8 +171,10 @@ class AggregateSuiteTest(unittest.TestCase):
                   "request publish": [10000] * args.rounds, "scatter total": [40000] * args.rounds,
                   "launch overhead": [50000] * args.rounds}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
-            with patch.object(demo, "run_case", return_value=values) as run, contextlib.redirect_stdout(io.StringIO()) as out:
-                demo.run_suite(args)
+            args.stats_file = os.path.join(directory, "stats.txt")
+            with patch.object(demo, "run_case", return_value=values) as run:
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    demo.run_suite(args)
         self.assertEqual(run.call_count, 2)
         self.assertIn("100.000", out.getvalue())
         self.assertIn("150.000", out.getvalue())
@@ -183,14 +187,18 @@ class AggregateSuiteTest(unittest.TestCase):
                   "launch overhead": [100000] * args.rounds}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp",
                                                                        return_value=directory):
+            args.stats_file = os.path.join(directory, "stats.txt")
             with patch.object(demo, "run_case", return_value=values), contextlib.redirect_stdout(io.StringIO()) as out:
                 demo.run_suite(args)
         self.assertNotIn("Device overhead breakdown", out.getvalue())
         self.assertIn("request", out.getvalue())
         self.assertIn("launch ovh", out.getvalue())
-        self.assertIn("P50(us)", out.getvalue())
-        self.assertIn("Metric descriptions", out.getvalue())
-        self.assertIn("逐轮 request", out.getvalue())
+        self.assertNotIn("P50(us)", out.getvalue())
+        self.assertNotIn("Metric descriptions", out.getvalue())
+        with open(args.stats_file, encoding="utf-8") as stats:
+            details = stats.read()
+        self.assertIn("P50(us)", details)
+        self.assertIn("逐轮 request", details)
 
     def test_poison_and_readback(self):
         args = Mock(segments=2, segment_bytes=4)
