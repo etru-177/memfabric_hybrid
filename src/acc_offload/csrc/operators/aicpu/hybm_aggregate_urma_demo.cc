@@ -17,7 +17,7 @@
 
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr uint32_t kScatterLaneCount = 4U;
+constexpr uint32_t kScatterLaneCount = 6U;
 
 void InvalidateDeviceCache(uintptr_t address)
 {

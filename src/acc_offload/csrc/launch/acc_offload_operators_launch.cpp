@@ -39,7 +39,7 @@ constexpr char kAggregateUrmaDemoFunctionName[] = "HybmAggregateUrmaDemo";
 constexpr char kBatchCopyFunctionName[] = "HybmBatchCopy";
 constexpr char kKvcacheScatterCopyFunctionName[] = "HybmKvcacheScatterCopy";
 constexpr uint32_t kKernelBlockDim = 1U;
-constexpr uint32_t kAggregateKernelBlockDim = 4U;
+constexpr uint32_t kAggregateKernelBlockDim = 6U;
 constexpr uint16_t kKernelTimeoutSeconds = 120U;
 
 struct BatchCopyKernelCache {
