@@ -63,7 +63,7 @@ class Timing(ctypes.Structure):
 
 
 CONTROL_STORAGE_BYTES = 2 * 4096 + ctypes.sizeof(Timing)
-PACKED_CONTROL_COPY_BYTES = 4096 + 64
+PACKED_CONTROL_COPY_BYTES = CONTROL_STORAGE_BYTES
 
 
 class CpuAffinityError(ValueError):
@@ -410,6 +410,7 @@ def make_device_control(request):
 
 
 def stage_device_control(handle, bm, control, hbm_gva):
+    ctypes.memset(ctypes.addressof(control) + 8192, 0, ctypes.sizeof(Timing))
     copy_to_hbm(handle, bm, ctypes.addressof(control), hbm_gva, PACKED_CONTROL_COPY_BYTES)
 
 
