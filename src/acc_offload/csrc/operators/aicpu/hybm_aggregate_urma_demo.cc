@@ -54,18 +54,33 @@ const ock::mf::BatchCopyRangeEntry *FindMailboxRange(const ock::mf::BatchCopyRou
 uint32_t WriteRemoteRequestAndDoorbell(const ock::mf::BatchCopyPeerEntry &peer, uint64_t remote,
                                        const HybmAggregateUrmaDemoMessage &message, const uint64_t *sourceAddresses)
 {
-    void *destination = reinterpret_cast<void *>(remote);
-    void *source = const_cast<uint64_t *>(sourceAddresses);
-    uint64_t length = static_cast<uint64_t>(message.request.segmentCount) * sizeof(uint64_t) +
-                      sizeof(HybmAggregateUrmaDemoRequest) + sizeof(message.doorbell);
-    HybmOneSideOpParam write{};
-    write.thread = peer.thread;
-    write.channel = peer.channel;
-    write.list_num = 1U;
-    write.dst_buf_addr_list = &destination;
-    write.src_buf_addr_list = &source;
-    write.len_list = &length;
-    return HybmWriteStrict(&write);
+    const uint64_t addressBytes = static_cast<uint64_t>(message.request.segmentCount) * sizeof(uint64_t);
+    uint64_t payloadLength = addressBytes + sizeof(HybmAggregateUrmaDemoRequest);
+    void *payloadDestination = reinterpret_cast<void *>(remote);
+    void *payloadSource = const_cast<uint64_t *>(sourceAddresses);
+    HybmOneSideOpParam payload{};
+    payload.thread = peer.thread;
+    payload.channel = peer.channel;
+    payload.list_num = 1U;
+    payload.dst_buf_addr_list = &payloadDestination;
+    payload.src_buf_addr_list = &payloadSource;
+    payload.len_list = &payloadLength;
+    const auto ret = HybmWriteStrict(&payload);
+    if (ret != BM_OK) {
+        return ret;
+    }
+
+    uint64_t doorbellLength = sizeof(message.doorbell);
+    void *doorbellDestination = reinterpret_cast<void *>(remote + payloadLength);
+    void *doorbellSource = const_cast<uint64_t *>(&message.doorbell);
+    HybmOneSideOpParam doorbell{};
+    doorbell.thread = peer.thread;
+    doorbell.channel = peer.channel;
+    doorbell.list_num = 1U;
+    doorbell.dst_buf_addr_list = &doorbellDestination;
+    doorbell.src_buf_addr_list = &doorbellSource;
+    doorbell.len_list = &doorbellLength;
+    return HybmWriteStrict(&doorbell);
 }
 
 void WaitForHost(const HybmAggregateUrmaDemoParam &param)
