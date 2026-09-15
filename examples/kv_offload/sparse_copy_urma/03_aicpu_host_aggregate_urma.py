@@ -749,9 +749,17 @@ def append_summary_rows(rows, size, count, stage_samples):
                                             for value in (average, minimum, maximum, p50, p95, p99))))
 
 
+def make_average_row(size, count, stage_samples):
+    names = ("E2E", "request publish", "gather", "URMA write", "scatter total", "launch overhead")
+    averages = [f"{sum(stage_samples[name]) / len(stage_samples[name]) / 1e3:.3f}"
+                if name in stage_samples else "-" for name in names]
+    return size, count, *averages
+
+
 def run_suite(args):
     directory = tempfile.mkdtemp(prefix="mf_aggregate_suite_")
     rows = []
+    average_rows = []
     sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
     print(f"warmup/case={args.warmup_rounds}, rounds/case={args.rounds}, "
           f"cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
@@ -771,14 +779,15 @@ def run_suite(args):
                 else:
                     samples = {"E2E": result["launch sync"]}
                 append_summary_rows(rows, size, count, samples)
+                average_rows.append(make_average_row(size, count, samples))
     finally:
         if rows:
             formula = ("request + host gather + host write + scatter + launch ovh"
                        if args.mode == "aggregate" else "launch sync")
             title = (f"{args.mode} copy summary (E2E = {formula}; "
                      f"verify={'PASS' if args.verify else 'OFF'})")
-            average_rows = [row[:4] for row in rows]
-            print_table(title, ("bytes/pkt", "packets", "stage", "avg(us)"), average_rows)
+            print_table(title, ("bytes/pkt", "packets", "E2E(us)", "request(us)", "host gather(us)",
+                                "host write(us)", "scatter(us)", "launch ovh(us)"), average_rows)
             stats_path = os.path.abspath(args.stats_file)
             with open(stats_path, "w", encoding="utf-8") as output:
                 output.write(format_table(title,
