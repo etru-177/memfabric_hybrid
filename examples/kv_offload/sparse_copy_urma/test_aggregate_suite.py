@@ -169,6 +169,7 @@ class AggregateSuiteTest(unittest.TestCase):
             args = demo.parse_args()
         values = {"gather": [20000] * args.rounds, "URMA write": [30000] * args.rounds,
                   "request publish": [10000] * args.rounds, "scatter total": [40000] * args.rounds,
+                  "AICPU e2e": [90000] * args.rounds,
                   "launch overhead": [50000] * args.rounds}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp", return_value=directory):
             args.stats_file = os.path.join(directory, "stats.txt")
@@ -184,6 +185,7 @@ class AggregateSuiteTest(unittest.TestCase):
             args = demo.parse_args()
         values = {"gather": [20000] * args.rounds, "URMA write": [30000] * args.rounds,
                   "request publish": [10000] * args.rounds, "scatter total": [40000] * args.rounds,
+                  "AICPU e2e": [90000] * args.rounds,
                   "launch overhead": [100000] * args.rounds}
         with tempfile.TemporaryDirectory() as directory, patch.object(demo.tempfile, "mkdtemp",
                                                                        return_value=directory):
@@ -192,6 +194,8 @@ class AggregateSuiteTest(unittest.TestCase):
                 demo.run_suite(args)
         self.assertNotIn("Device overhead breakdown", out.getvalue())
         self.assertIn("request", out.getvalue())
+        self.assertIn("AICPU E2E(us)", out.getvalue())
+        self.assertLess(out.getvalue().index("E2E(us)"), out.getvalue().index("AICPU E2E(us)"))
         self.assertIn("launch ovh", out.getvalue())
         self.assertNotIn("P50(us)", out.getvalue())
         self.assertNotIn("Metric descriptions", out.getvalue())

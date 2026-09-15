@@ -703,6 +703,7 @@ def print_metric_descriptions(output=None):
         ("bytes/pkt", "每个离散数据包的字节数。"),
         ("packets", "每轮聚合和分散的数据包数量。"),
         ("E2E", "逐轮 request、host gather、host write、scatter 和 launch ovh 之和。"),
+        ("AICPU E2E", "AICPU核内从request开始到scatter及发布屏障完成的总时间，包含request和等待Host。"),
         ("request", "AICPU 查找路由并把 request、源GVA地址表和 doorbell 发布到 Host 的时间。"),
         ("host gather", "Host 按Device下发的GVA地址表将离散数据聚合到连续缓冲区的时间。"),
         ("host write", "Host 将连续聚合缓冲区通过URMA写到Device临时缓冲区的时间。"),
@@ -722,7 +723,8 @@ def measured_timing_positions(rounds, every):
 def aggregate_summary_samples(result, rounds, timing_every):
     if timing_every <= 0:
         raise RuntimeError("aggregate summary requires --device-timing-every greater than zero")
-    names = ("request publish", "gather", "URMA write", "scatter total", "launch overhead")
+    names = ("request publish", "gather", "URMA write", "scatter total", "AICPU e2e", "launch overhead")
+    e2e_names = ("request publish", "gather", "URMA write", "scatter total", "launch overhead")
     positions = measured_timing_positions(rounds, timing_every)
     samples = {}
     for name in names:
@@ -733,12 +735,13 @@ def aggregate_summary_samples(result, rounds, timing_every):
     sample_count = len(samples["request publish"])
     if any(len(values) != sample_count for values in samples.values()):
         raise RuntimeError("Host and Device timing sample counts do not match")
-    samples["E2E"] = [sum(samples[name][index] for name in names) for index in range(sample_count)]
+    samples["E2E"] = [sum(samples[name][index] for name in e2e_names) for index in range(sample_count)]
     return samples
 
 
 def append_summary_rows(rows, size, count, stage_samples):
-    display_names = (("E2E", "E2E"), ("request publish", "request"), ("gather", "host gather"),
+    display_names = (("E2E", "E2E"), ("AICPU e2e", "AICPU E2E"), ("request publish", "request"),
+                     ("gather", "host gather"),
                      ("URMA write", "host write"), ("scatter total", "scatter"),
                      ("launch overhead", "launch ovh"))
     for key, label in display_names:
@@ -750,7 +753,8 @@ def append_summary_rows(rows, size, count, stage_samples):
 
 
 def make_average_row(size, count, stage_samples):
-    names = ("E2E", "request publish", "gather", "URMA write", "scatter total", "launch overhead")
+    names = ("E2E", "AICPU e2e", "request publish", "gather", "URMA write", "scatter total",
+             "launch overhead")
     averages = [f"{sum(stage_samples[name]) / len(stage_samples[name]) / 1e3:.3f}"
                 if name in stage_samples else "-" for name in names]
     return size, count, *averages
@@ -786,8 +790,9 @@ def run_suite(args):
                        if args.mode == "aggregate" else "launch sync")
             title = (f"{args.mode} copy summary (E2E = {formula}; "
                      f"verify={'PASS' if args.verify else 'OFF'})")
-            print_table(title, ("bytes/pkt", "packets", "E2E(us)", "request(us)", "host gather(us)",
-                                "host write(us)", "scatter(us)", "launch ovh(us)"), average_rows)
+            print_table(title, ("bytes/pkt", "packets", "E2E(us)", "AICPU E2E(us)", "request(us)",
+                                "host gather(us)", "host write(us)", "scatter(us)", "launch ovh(us)"),
+                        average_rows)
             stats_path = os.path.abspath(args.stats_file)
             with open(stats_path, "w", encoding="utf-8") as output:
                 output.write(format_table(title,
