@@ -52,6 +52,8 @@ struct HybmAggregateUrmaDemoParam {
     uint8_t *dstNew;
     uint8_t *dstBase;
     HybmAggregateUrmaDemoTiming *timing;
+    uint32_t scatterBlockCount;
+    uint32_t reserved;
 };
 
 static_assert(sizeof(HybmAggregateUrmaDemoRequest) == 64U);

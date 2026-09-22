@@ -15,6 +15,19 @@ python3 03_aicpu_host_aggregate_urma.py --mode aggregate --segment-bytes 656 --s
 python3 03_aicpu_host_aggregate_urma.py --mode direct --segment-bytes 656 --segments 100 3200 25600
 ```
 
+aggregate 模式默认使用 6 个 AICPU block 并行 scatter。可通过 `--scatter-blocks` 对比不同并发度，例如：
+
+```bash
+python3 03_aicpu_host_aggregate_urma.py --mode aggregate \
+  --segment-bytes 656 --segments 3200 --scatter-blocks 1  # 单 block 基线
+python3 03_aicpu_host_aggregate_urma.py --mode aggregate \
+  --segment-bytes 656 --segments 3200 --scatter-blocks 4
+python3 03_aicpu_host_aggregate_urma.py --mode aggregate \
+  --segment-bytes 656 --segments 3200 --scatter-blocks 6
+```
+
+`--scatter-blocks` 取值范围为 `[1, 64]`，同时控制 kernel launch 的 `blockDim`、段范围划分和完成计数。
+
 E2E 均为同步 C 接口调用的提交到完成时间，包含 launch 和 stream synchronize，
 不包含进程初始化、输入准备、地址列表创建/H2D、目的区 poison 和结果 G2H 校验。
 direct 地址列表在测试前一次创建并同步；aggregate 控制消息也在每轮计时前准备。

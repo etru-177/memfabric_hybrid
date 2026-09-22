@@ -17,8 +17,6 @@
 
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr uint32_t kScatterLaneCount = 6U;
-
 void InvalidateDeviceCache(uintptr_t address)
 {
     __asm__ __volatile__("dc civac, %0" : : "r"(address) : "memory");
@@ -145,9 +143,9 @@ void ScatterPartition(const HybmAggregateUrmaDemoParam &param, uint32_t laneInde
 {
     auto request = param.message->request;
     const uint32_t begin = static_cast<uint32_t>(
-        static_cast<uint64_t>(request.segmentCount) * laneIndex / kScatterLaneCount);
+        static_cast<uint64_t>(request.segmentCount) * laneIndex / param.scatterBlockCount);
     const uint32_t end = static_cast<uint32_t>(
-        static_cast<uint64_t>(request.segmentCount) * (laneIndex + 1U) / kScatterLaneCount);
+        static_cast<uint64_t>(request.segmentCount) * (laneIndex + 1U) / param.scatterBlockCount);
     HybmAggregateUrmaDemoParam partition = param;
     partition.dstNew += static_cast<uint64_t>(begin) * request.segmentBytes;
     partition.dstBase += static_cast<uint64_t>(begin) * request.dstStride;
@@ -208,7 +206,7 @@ extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
 {
     auto *sync = GetSync(param->timing);
     const uint32_t laneTicket = __atomic_fetch_add(&sync->nextLane, 1U, __ATOMIC_ACQ_REL);
-    const uint32_t laneIndex = laneTicket % kScatterLaneCount;
+    const uint32_t laneIndex = laneTicket % param->scatterBlockCount;
     const uint32_t generation = static_cast<uint32_t>(param->message->doorbell);
     if (laneIndex == 0U) {
         param->timing->requestNs = NowNs();
@@ -230,7 +228,7 @@ extern "C" uint32_t HybmAggregateUrmaDemo(HybmAggregateUrmaDemoParam *param)
     }
     ScatterPartition(*param, laneIndex);
     const uint32_t completed = __atomic_add_fetch(&sync->completedLanes, 1U, __ATOMIC_ACQ_REL);
-    if (completed % kScatterLaneCount == 0U) {
+    if (completed % param->scatterBlockCount == 0U) {
         FinishLastLane(param, NowNs());
     }
     return BM_OK;

@@ -78,6 +78,7 @@ class AggregateSuiteTest(unittest.TestCase):
         self.assertEqual(args.segments[-1], 25600)
         self.assertTrue(args.force_host_nic_plugin)
         self.assertEqual(args.source_pool_segments, 0)
+        self.assertEqual(args.scatter_blocks, 6)
 
     def test_dense_source_pool_layout_and_permutation(self):
         layout = demo.make_layout(3200, 656, 262144)
@@ -101,6 +102,17 @@ class AggregateSuiteTest(unittest.TestCase):
         with patch("sys.argv", ["demo", "--warmup-rounds", "-1"]):
             with self.assertRaises(SystemExit):
                 demo.parse_args()
+
+    def test_scatter_blocks_must_be_in_range(self):
+        for value in (0, 65):
+            with self.subTest(value=value), patch("sys.argv", ["demo", "--scatter-blocks", str(value)]):
+                with self.assertRaises(SystemExit):
+                    demo.parse_args()
+
+    def test_scatter_blocks_can_be_configured(self):
+        with patch("sys.argv", ["demo", "--scatter-blocks", "4"]):
+            args = demo.parse_args()
+        self.assertEqual(args.scatter_blocks, 4)
 
     def test_measured_round_range(self):
         args = Mock(warmup_rounds=10, rounds=100)

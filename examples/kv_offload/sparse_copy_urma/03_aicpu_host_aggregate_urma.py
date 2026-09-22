@@ -481,7 +481,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
         library = ctypes.CDLL(os.path.join(os.environ["MEMFABRIC_HYBRID_EXTEND_LIB_PATH"],
                                           "libmf_hybm_accoffload.so"))
         launch = library.AccOffloadAggregateUrmaDemo
-        launch.argtypes = [ctypes.c_uint64] * 6 + [ctypes.c_uint16]
+        launch.argtypes = [ctypes.c_uint64] * 6 + [ctypes.c_uint32, ctypes.c_uint16]
         launch.restype = ctypes.c_int32
         timing_and_sync_bytes = ctypes.sizeof(timing) + SYNC_BYTES
         copy_to_hbm(handle, bm, ctypes.addressof(timing), hbm_gva + 8192, timing_and_sync_bytes)
@@ -502,7 +502,7 @@ def run_npu(args, handle, bm, runtime_device, layout):
             assert launch(hbm_va + DEVICE_ADDRESS_OFFSET + address_bytes, hbm_va + DEVICE_ADDRESS_OFFSET,
                           hbm_va + 4096,
                           hbm_va + dst_new_offset, hbm_va + dst_base_offset,
-                          hbm_va + 8192, runtime_device) == 0
+                          hbm_va + 8192, args.scatter_blocks, runtime_device) == 0
             launch_end = time.perf_counter_ns()
             measured = is_measured_round(args, round_index)
             if measured:
@@ -547,6 +547,8 @@ def parse_args():
     parser.add_argument("--case-timeout", type=float, default=600,
                         help="maximum seconds per case, including initialization and cleanup")
     parser.add_argument("--gather-threads", type=int, default=1)
+    parser.add_argument("--scatter-blocks", type=int, default=6,
+                        help="AICPU blocks used by aggregate scatter, default: 6")
     parser.add_argument("--source-pool-segments", type=int, default=0,
                         help="dense Host token pool size; 0 keeps the fixed strided source addresses")
     parser.add_argument("--source-seed", type=int, default=2026,
@@ -573,6 +575,8 @@ def parse_args():
         parser.error("--warmup-rounds must be non-negative")
     if not 1 <= args.gather_threads <= 64:
         parser.error("--gather-threads must be in [1, 64]")
+    if not 1 <= args.scatter_blocks <= 64:
+        parser.error("--scatter-blocks must be in [1, 64]")
     if args.source_pool_segments < 0 or (args.source_pool_segments and
                                         args.source_pool_segments < max(args.segments)):
         parser.error("--source-pool-segments must be 0 or at least the largest --segments value")
@@ -765,8 +769,9 @@ def run_suite(args):
     rows = []
     average_rows = []
     sizes, counts = sorted(set(args.segment_bytes)), sorted(set(args.segments))
+    scatter_config = f", scatter_blocks={args.scatter_blocks}" if args.mode == "aggregate" else ""
     print(f"warmup/case={args.warmup_rounds}, rounds/case={args.rounds}, "
-          f"cases={len(sizes) * len(counts)}, logs={directory}", flush=True)
+          f"cases={len(sizes) * len(counts)}{scatter_config}, logs={directory}", flush=True)
     try:
         for size in sizes:
             for count in counts:
